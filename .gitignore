@@ -1,0 +1,16 @@
+node_modules/
+.venv/
+dist/
+data/
+.pnpm-store/
+.claude/
+__pycache__/
+*.pyc
+*.log
+.import_tmp/
+*.zip
+.DS_Store
+._*
+.env
+.env.*
+!.env.example

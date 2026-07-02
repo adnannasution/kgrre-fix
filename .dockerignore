@@ -1,0 +1,16 @@
+node_modules
+.venv
+dist
+data
+.pnpm-store
+.git
+.claude
+.env
+.env.*
+*.log
+.DS_Store
+._*
+__pycache__
+*.pyc
+tests
+run_kg.command

@@ -1,0 +1,97 @@
+import type {
+  DatasetStats,
+  DatasetSummary,
+  Equipment360,
+  FolderScan,
+  GraphEdgeDetail,
+  GraphNode,
+  GraphSlice,
+  ImportJob,
+  NodeDegree,
+  QueryMetadata,
+  ReadinessContext,
+  ReviewIssue,
+  ReliabilityInsight,
+  RuSummary,
+  SchemaBundle,
+} from '../types'
+
+const API = '/api'
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    headers: options?.body instanceof FormData ? options.headers : { 'Content-Type': 'application/json', ...options?.headers },
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(detail.detail || 'Permintaan gagal.')
+  }
+  return response.json()
+}
+
+export const api = {
+  scanFolder: (validate = false) => request<FolderScan>(`/folder?validate=${validate}`),
+  updateFolder: (upload_folder: string) =>
+    request<FolderScan>('/folder', { method: 'PUT', body: JSON.stringify({ upload_folder }) }),
+  startImport: (name: string, allow_partial = true) =>
+    request<ImportJob>('/imports', { method: 'POST', body: JSON.stringify({ name, allow_partial }) }),
+  startZipImport: (file: File, name: string, allow_partial = true) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', name)
+    form.append('allow_partial', String(allow_partial))
+    return request<ImportJob>('/imports/zip', { method: 'POST', body: form })
+  },
+  importStatus: (id: string) => request<ImportJob>(`/imports/${id}`),
+  cancelImport: (id: string) => request(`/imports/${id}`, { method: 'DELETE' }),
+  datasets: () => request<DatasetSummary[]>('/datasets'),
+  dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),
+  renameDataset: (id: string, name: string) =>
+    request<DatasetSummary>(`/datasets/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deleteDataset: (id: string) => request(`/datasets/${id}`, { method: 'DELETE' }),
+  stats: (id: string) => request<DatasetStats>(`/datasets/${id}/stats`),
+  queryMetadata: (id: string) => request<QueryMetadata>(`/datasets/${id}/query-metadata`),
+  readinessContext: (id: string, nodeId: string) =>
+    request<ReadinessContext>(`/datasets/${id}/readiness-context/${encodeURIComponent(nodeId)}`),
+  search: (id: string, query = '', nodeType = '', domain = '', limit = 50, refineryUnit = '', equipmentCode = '') =>
+    request<GraphNode[]>(`/datasets/${id}/search?${new URLSearchParams({ q: query, node_type: nodeType, domain, limit: String(limit), refinery_unit: refineryUnit, equipment_code: equipmentCode })}`),
+  neighbors: (id: string, nodeId: string, options: { depth: number; includeCandidates: boolean; minConfidence: number; relationshipType?: string; nodeType?: string; refineryUnit?: string; equipmentCode?: string; limit?: number }) =>
+    request<GraphSlice>(`/datasets/${id}/neighbors/${encodeURIComponent(nodeId)}?${new URLSearchParams({
+      depth: String(options.depth),
+      include_candidates: String(options.includeCandidates),
+      min_confidence: String(options.minConfidence),
+      relationship_type: options.relationshipType ?? '',
+      node_type: options.nodeType ?? '',
+      refinery_unit: options.refineryUnit ?? '',
+      equipment_code: options.equipmentCode ?? '',
+      limit: String(options.limit ?? 300),
+    })}`),
+  degree: (id: string, nodeId: string, includeCandidates = false) =>
+    request<NodeDegree>(`/datasets/${id}/nodes/${encodeURIComponent(nodeId)}/degree?include_candidates=${includeCandidates}`),
+  directedDescendants: (id: string, nodeId: string, options: { minDepth?: number; maxDepth?: number; limit?: number; relationshipType?: string; includeCandidates?: boolean }) =>
+    request<GraphSlice>(`/datasets/${id}/directed-descendants/${encodeURIComponent(nodeId)}?${new URLSearchParams({
+      min_depth: String(options.minDepth ?? 3),
+      max_depth: String(options.maxDepth ?? 5),
+      limit: String(options.limit ?? 300),
+      relationship_type: options.relationshipType ?? '',
+      include_candidates: String(options.includeCandidates ?? false),
+    })}`),
+  node: (id: string, nodeId: string) =>
+    request<GraphNode & { domain_record?: Record<string, unknown> }>(`/datasets/${id}/nodes/${encodeURIComponent(nodeId)}`),
+  relationship: (id: string, relationshipId: string) =>
+    request<GraphEdgeDetail>(`/datasets/${id}/relationships/${encodeURIComponent(relationshipId)}`),
+  propertyQuery: (id: string, query: string, limit = 200) =>
+    request<GraphSlice>(`/datasets/${id}/property-query`, { method: 'POST', body: JSON.stringify({ query, limit }) }),
+  equipment360: (id: string, nodeId: string) =>
+    request<Equipment360>(`/datasets/${id}/equipment/${encodeURIComponent(nodeId)}/360`),
+  issues: (id: string, issueType = '') =>
+    request<{ total: number; items: ReviewIssue[] }>(`/datasets/${id}/issues?${new URLSearchParams({ issue_type: issueType, limit: '500' })}`),
+  audit: (id: string, issueType: string) =>
+    request<{ total: number; items: unknown[] }>(`/datasets/${id}/audit/${issueType}?limit=500`),
+  ruSummary: (id: string) => request<RuSummary>(`/datasets/${id}/ru-summary`),
+  schema: (id: string) => request<SchemaBundle>(`/datasets/${id}/schema`),
+  reliabilityInsight: (id: string) => request<ReliabilityInsight>(`/datasets/${id}/insights/reliability`),
+  analysis: (id: string, name: string) => request<Record<string, unknown>[]>(`/datasets/${id}/analysis/${name}`),
+  exportUrl: (id: string, kind: string) => `${API}/datasets/${id}/export/${kind}`,
+}
