@@ -69,6 +69,15 @@ def start_import(name: str, allow_partial: bool = True) -> ImportJob:
     return job
 
 
+def start_chunked_import(name: str, folder: Path, allow_partial: bool = True) -> ImportJob:
+    """Import dari folder yang sudah berisi file hasil chunked upload."""
+    scan = scan_package(folder, validate=True)
+    files = _select_ready_files(scan, allow_partial)
+    job = _create_job(name)
+    threading.Thread(target=_run_import, args=(job, files, folder, True), daemon=True).start()
+    return job
+
+
 def start_zip_import(name: str, zip_path: Path, allow_partial: bool = True) -> ImportJob:
     extract_dir = UPLOADS_DIR / uuid.uuid4().hex
     extract_dir.mkdir(parents=True, exist_ok=True)

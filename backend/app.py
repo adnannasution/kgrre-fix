@@ -22,7 +22,7 @@ from .config import (
     save_config,
 )
 from .database import fetch_tuple, pool
-from .importer import JOBS, cancel_job, start_import, start_zip_import
+from .importer import JOBS, cancel_job, start_chunked_import, start_import, start_zip_import
 from .scanner import scan_folder
 
 PRIORITY_RELATIONSHIPS = [
@@ -57,6 +57,23 @@ class FolderConfig(BaseModel):
 class ImportRequest(BaseModel):
     name: str = "Knowledge Graph Dataset"
     allow_partial: bool = True
+
+
+class ChunkedFileInfo(BaseModel):
+    name: str
+    total_chunks: int
+
+
+class ChunkedInitRequest(BaseModel):
+    name: str = "Knowledge Graph Dataset"
+    files: list[ChunkedFileInfo]
+
+
+import threading as _threading
+import uuid as _uuid
+
+_CHUNK_SESSIONS: dict[str, dict] = {}
+_CHUNK_LOCK = _threading.Lock()
 
 
 class RenameRequest(BaseModel):
@@ -205,6 +222,68 @@ async def create_zip_import(
         return start_zip_import(name, target, allow_partial).public()
     except ValueError as exc:
         target.unlink(missing_ok=True)
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/imports/chunked/init")
+def init_chunked_upload(payload: ChunkedInitRequest):
+    upload_id = _uuid.uuid4().hex
+    session_dir = UPLOADS_DIR / upload_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    with _CHUNK_LOCK:
+        _CHUNK_SESSIONS[upload_id] = {
+            "name": payload.name,
+            "dir": str(session_dir),
+            "files": {f.name: {"total_chunks": f.total_chunks, "received": set()} for f in payload.files},
+        }
+    return {"upload_id": upload_id}
+
+
+@app.post("/api/imports/chunked/{upload_id}/chunk")
+async def upload_chunk(
+    upload_id: str,
+    file_name: str = Form(...),
+    chunk_index: int = Form(...),
+    data: UploadFile = File(...),
+):
+    with _CHUNK_LOCK:
+        session = _CHUNK_SESSIONS.get(upload_id)
+    if not session:
+        raise HTTPException(404, "Upload session tidak ditemukan.")
+    if file_name not in session["files"]:
+        raise HTTPException(400, f"File {file_name} tidak terdaftar dalam sesi ini.")
+    chunk_path = Path(session["dir"]) / f"{file_name}.part{chunk_index}"
+    with chunk_path.open("wb") as fh:
+        while chunk := await data.read(1024 * 1024):
+            fh.write(chunk)
+    with _CHUNK_LOCK:
+        session["files"][file_name]["received"].add(chunk_index)
+        received = len(session["files"][file_name]["received"])
+        total = session["files"][file_name]["total_chunks"]
+    return {"file_name": file_name, "chunk_index": chunk_index, "received": received, "total": total}
+
+
+@app.post("/api/imports/chunked/{upload_id}/commit")
+def commit_chunked_upload(upload_id: str):
+    with _CHUNK_LOCK:
+        session = _CHUNK_SESSIONS.pop(upload_id, None)
+    if not session:
+        raise HTTPException(404, "Upload session tidak ditemukan.")
+    session_dir = Path(session["dir"])
+    for file_name, info in session["files"].items():
+        total = info["total_chunks"]
+        received = info["received"]
+        if len(received) < total:
+            raise HTTPException(400, f"File {file_name} belum lengkap: {len(received)}/{total} chunk.")
+        out_path = session_dir / file_name
+        with out_path.open("wb") as out:
+            for i in range(total):
+                part = session_dir / f"{file_name}.part{i}"
+                out.write(part.read_bytes())
+                part.unlink(missing_ok=True)
+    try:
+        return start_chunked_import(session["name"], session_dir).public()
+    except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

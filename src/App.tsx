@@ -373,6 +373,78 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
   )
 }
 
+const CHUNK_SIZE = 5 * 1024 * 1024 // 5 MB
+
+type ChunkFileState = { file: File; uploaded: number; total: number; done: boolean }
+
+function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJobStart: (job: ImportJob) => void; disabled: boolean }) {
+  const [files, setFiles] = useState<Record<string, ChunkFileState>>({})
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string>()
+
+  const handleFile = (fileName: string, file: File | undefined) => {
+    if (!file) return
+    setFiles(prev => ({ ...prev, [fileName]: { file, uploaded: 0, total: Math.ceil(file.size / CHUNK_SIZE), done: false } }))
+  }
+
+  const startUpload = async () => {
+    setError(undefined)
+    const entries = Object.entries(files).filter(([, s]) => s.file)
+    if (!entries.some(([n]) => n === 'nodes.csv') || !entries.some(([n]) => n === 'relationships.csv')) {
+      setError('nodes.csv dan relationships.csv wajib dipilih.')
+      return
+    }
+    setUploading(true)
+    try {
+      const { upload_id } = await api.initChunkedUpload(name, entries.map(([n, s]) => ({ name: n, total_chunks: s.total })))
+      for (const [fileName, state] of entries) {
+        for (let i = 0; i < state.total; i++) {
+          const start = i * CHUNK_SIZE
+          const chunk = state.file.slice(start, start + CHUNK_SIZE)
+          await api.uploadChunk(upload_id, fileName, i, chunk)
+          setFiles(prev => ({ ...prev, [fileName]: { ...prev[fileName], uploaded: i + 1 } }))
+        }
+        setFiles(prev => ({ ...prev, [fileName]: { ...prev[fileName], done: true } }))
+      }
+      const job = await api.commitChunkedUpload(upload_id)
+      onJobStart(job)
+      setFiles({})
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload gagal.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const allSelected = files['nodes.csv'] && files['relationships.csv']
+
+  return (
+    <section className="panel import-action" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '12px' }}>
+      <div>
+        <label>Upload file CSV langsung (chunked — cocok untuk file besar)</label>
+        <p className="warning-text"><UploadIcon />File dipotong otomatis {CHUNK_SIZE / 1024 / 1024} MB per chunk. Import tetap berjalan di server meski browser ditutup.</p>
+      </div>
+      <div style={{ display: 'grid', gap: '8px' }}>
+        {(['nodes.csv', 'relationships.csv', 'domain_equipment.csv', 'domain_reliability.csv', 'domain_maintenance.csv', 'domain_readiness_operation.csv', 'domain_inspection_issue.csv', 'domain_cost_program.csv'] as const).map(fn => (
+          <div key={fn} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ minWidth: '220px', fontFamily: 'monospace', fontSize: '13px' }}>{fn}{fn === 'nodes.csv' || fn === 'relationships.csv' ? ' *' : ''}</span>
+            <input type="file" accept=".csv" disabled={uploading} onChange={e => handleFile(fn, e.target.files?.[0])} />
+            {files[fn] && (
+              <span style={{ fontSize: '12px', color: files[fn].done ? 'var(--green)' : 'var(--muted)' }}>
+                {files[fn].done ? '✓ selesai' : uploading ? `${files[fn].uploaded}/${files[fn].total} chunk` : `${(files[fn].file.size / 1024 / 1024).toFixed(1)} MB`}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+      {error && <p className="job-error">{error}</p>}
+      <button className="secondary large" disabled={!allSelected || uploading || disabled} onClick={() => void startUpload()}>
+        {uploading ? 'Mengunggah…' : 'Upload & Import CSV'} <ChevronIcon />
+      </button>
+    </section>
+  )
+}
+
 function ImportCenter({
   scan, job, busy, onScan, onStart, onZip, onCancel, onFolder,
 }: {
@@ -388,7 +460,16 @@ function ImportCenter({
   const [name, setName] = useState(`KG ${new Date().toLocaleDateString('id-ID')}`)
   const [folder, setFolder] = useState(scan?.folder ?? '')
   const [zipFile, setZipFile] = useState<File>()
+  const [chunkedJob, setChunkedJob] = useState<ImportJob>()
   useEffect(() => { if (scan?.folder) setFolder(scan.folder) }, [scan?.folder])
+  useEffect(() => {
+    if (!chunkedJob || !['queued', 'running'].includes(chunkedJob.status)) return
+    const id = setInterval(async () => {
+      const next = await api.importStatus(chunkedJob.id).catch(() => null)
+      if (next) setChunkedJob(next)
+    }, 2000)
+    return () => clearInterval(id)
+  }, [chunkedJob?.id, chunkedJob?.status])
   const ready = scan?.files.some((item) => ['Ready', 'Changed'].includes(item.status))
   const requiredMissing = scan?.files.filter((item) => item.required && item.status === 'Missing').length ?? 0
 
@@ -454,6 +535,15 @@ function ImportCenter({
           Import ZIP <ChevronIcon />
         </button>
       </section>
+
+      <ChunkedUploadPanel name={name} onJobStart={setChunkedJob} disabled={busy || job?.status === 'running'} />
+      {chunkedJob && ['queued', 'running', 'failed', 'cancelled'].includes(chunkedJob.status) && (
+        <section className="panel job-card">
+          <div className="job-head"><div><span className="eyebrow">{chunkedJob.phase}</span><h3>{chunkedJob.message || chunkedJob.name}</h3></div><b>{chunkedJob.progress}%</b></div>
+          <div className="progress"><span style={{ width: `${chunkedJob.progress}%` }} /></div>
+          {chunkedJob.error && <p className="job-error">{chunkedJob.error}</p>}
+        </section>
+      )}
 
       <details className="settings panel">
         <summary>Folder settings</summary>
