@@ -45,6 +45,19 @@ export const api = {
   },
   importStatus: (id: string) => request<ImportJob>(`/imports/${id}`),
   cancelImport: (id: string) => request(`/imports/${id}`, { method: 'DELETE' }),
+  initChunkedUpload: (name: string, files: { name: string; total_chunks: number }[]) =>
+    request<{ upload_id: string }>('/imports/chunked/init', { method: 'POST', body: JSON.stringify({ name, files }) }),
+  uploadChunk: (uploadId: string, fileName: string, chunkIndex: number, data: Blob) => {
+    const form = new FormData()
+    form.append('file_name', fileName)
+    form.append('chunk_index', String(chunkIndex))
+    form.append('data', data, fileName)
+    return request<{ file_name: string; chunk_index: number; received: number; total: number }>(
+      `/imports/chunked/${uploadId}/chunk`, { method: 'POST', body: form }
+    )
+  },
+  commitChunkedUpload: (uploadId: string) =>
+    request<ImportJob>(`/imports/chunked/${uploadId}/commit`, { method: 'POST' }),
   datasets: () => request<DatasetSummary[]>('/datasets'),
   dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),
   renameDataset: (id: string, name: string) =>
