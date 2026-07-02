@@ -434,34 +434,6 @@ function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
         <p>Upload file Excel SAP/maintenance langsung — ETL berjalan otomatis dan menghasilkan knowledge graph siap pakai.</p>
       </div>
 
-      {/* File yang didukung */}
-      <section className="panel">
-        <h2>File Excel yang Didukung</h2>
-        <div className="file-grid" style={{ marginTop: '12px' }}>
-          {[
-            { name: 'all_ru_equipment_*.xlsx', desc: 'Master equipment (sheet: Sheet4)', required: true },
-            { name: 'pt02_*.xlsx / pt03_*.xlsx', desc: 'Maintenance order & notification', required: false },
-            { name: 'vw_reportirkapplanactual*.xlsx', desc: 'RKAP / cost program', required: false },
-            { name: 'running_hours_*.xlsx / n_0_*.xlsx', desc: 'Reliability & running hours', required: false },
-            { name: 'inspection_plan*.xlsx', desc: 'Inspection plan', required: false },
-            { name: 'icu_database*.xlsx / icu*.xlsx', desc: 'ICU issue database', required: false },
-            { name: 'apr_*.xlsx / readiness_atg*.xlsx', desc: 'Readiness & operasi', required: false },
-            { name: 'rcps_db_*.xlsx', desc: 'RCPS (sheet: rcps, rekomendasi)', required: false },
-          ].map(f => (
-            <div key={f.name} className={`file-row status-${f.required ? 'ready' : 'optional'}`}>
-              <div className="file-number">{f.required ? 'R' : 'O'}</div>
-              <div className="file-info">
-                <strong style={{ fontFamily: 'monospace', fontSize: '13px' }}>{f.name}</strong>
-                <span>{f.desc}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-        <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--muted)' }}>
-          R = Wajib · O = Opsional. Nama file harus mengikuti pola di atas agar terdeteksi otomatis.
-        </p>
-      </section>
-
       {/* Form upload */}
       {!isRunning && !isDone && (
         <section className="panel import-action" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '12px' }}>
@@ -487,6 +459,38 @@ function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
             {uploading ? 'Mengunggah…' : 'Proses ETL & Buat Knowledge Graph'} <ChevronIcon />
           </button>
         </section>
+      )}
+
+      {/* Panduan nama file — collapsed by default */}
+      {!isRunning && !isDone && (
+        <details className="settings panel">
+          <summary>Panduan deteksi otomatis nama file</summary>
+          <p style={{ fontSize: '13px', color: 'var(--muted)', margin: '8px 0 12px' }}>
+            ETL mendeteksi domain dari nama file. File dengan nama di luar pola ini tetap bisa diupload — hanya tidak akan terdeteksi domainnya dan dilewati.
+          </p>
+          <div className="file-grid">
+            {[
+              { name: 'all_ru_equipment_*.xlsx', desc: 'Master equipment (sheet: Sheet4)', required: true },
+              { name: 'pt02_*.xlsx / pt03_*.xlsx', desc: 'Maintenance order & notification', required: false },
+              { name: 'vw_reportirkapplanactual*.xlsx', desc: 'RKAP / cost program', required: false },
+              { name: 'running_hours_*.xlsx / n_0_*.xlsx', desc: 'Reliability & running hours', required: false },
+              { name: 'inspection_plan*.xlsx', desc: 'Inspection plan', required: false },
+              { name: 'icu_database*.xlsx / icu*.xlsx', desc: 'ICU issue database', required: false },
+              { name: 'apr_*.xlsx / readiness_atg*.xlsx', desc: 'Readiness & operasi', required: false },
+              { name: 'rcps_db_*.xlsx', desc: 'RCPS (sheet: rcps, rekomendasi)', required: false },
+              { name: 'issue_list*.xlsx / paf_issue*.xlsx', desc: 'Organization issue list', required: false },
+            ].map(f => (
+              <div key={f.name} className={`file-row status-${f.required ? 'ready' : 'optional'}`}>
+                <div className="file-number">{f.required ? 'R' : 'O'}</div>
+                <div className="file-info">
+                  <strong style={{ fontFamily: 'monospace', fontSize: '13px' }}>{f.name}</strong>
+                  <span>{f.desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p style={{ marginTop: '10px', fontSize: '12px', color: 'var(--muted)' }}>R = Wajib · O = Opsional</p>
+        </details>
       )}
 
       {/* Progress ETL */}
