@@ -22,6 +22,7 @@ from .config import (
     save_config,
 )
 from .database import fetch_tuple, pool
+from .etl_pipeline import start_etl_import
 from .importer import JOBS, cancel_job, start_chunked_import, start_import, start_zip_import
 from .scanner import scan_folder
 
@@ -284,6 +285,31 @@ def commit_chunked_upload(upload_id: str):
     try:
         return start_chunked_import(session["name"], session_dir).public()
     except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/etl/upload")
+async def etl_upload(
+    files: list[UploadFile] = File(...),
+    name: str = Form("Knowledge Graph ETL Dataset"),
+):
+    if not files:
+        raise HTTPException(400, "Minimal satu file Excel diperlukan.")
+    saved: list[Path] = []
+    etl_dir = UPLOADS_DIR / _uuid.uuid4().hex
+    etl_dir.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        if not f.filename or not f.filename.lower().endswith((".xlsx", ".xls")):
+            raise HTTPException(400, f"File {f.filename} bukan format Excel (.xlsx/.xls).")
+        dest = etl_dir / f.filename
+        with dest.open("wb") as fh:
+            while chunk := await f.read(1024 * 1024):
+                fh.write(chunk)
+        saved.append(dest)
+    try:
+        job = start_etl_import(name, saved)
+        return job.public()
+    except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

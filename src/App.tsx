@@ -32,7 +32,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets'
+type Page = 'overview' | 'import' | 'etl' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -255,6 +255,7 @@ export default function App() {
         <nav>
           <Nav icon={<GridIcon />} label="Overview" active={page === 'overview'} onClick={() => setPage('overview')} />
           <Nav icon={<UploadIcon />} label="Import Center" active={page === 'import'} onClick={() => setPage('import')} />
+          <Nav icon={<UploadIcon />} label="Data Mentah" active={page === 'etl'} onClick={() => setPage('etl')} />
           <Nav icon={<DatabaseIcon />} label="Executive RU" active={page === 'executive'} onClick={() => setPage('executive')} />
           <Nav icon={<GridIcon />} label="Reliability Insight" active={page === 'insight'} onClick={() => setPage('insight')} />
           <Nav icon={<EquipmentIcon />} label="Equipment 360" active={page === 'equipment'} onClick={() => setPage('equipment')} />
@@ -312,6 +313,7 @@ export default function App() {
             onFolder={async (path) => setScan(await api.updateFolder(path))}
           />
         )}
+        {page === 'etl' && <EtlUploadPage onNavigate={setPage} />}
         {page === 'executive' && <ExecutiveDashboard dataset={active} />}
         {page === 'insight' && <ReliabilityInsightPage dataset={active} onNavigate={setPage} />}
         {page === 'equipment' && <Equipment360 dataset={active} />}
@@ -369,6 +371,197 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
           </div>
         </section>
       </div>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Halaman ETL — upload file Excel mentah → knowledge graph otomatis
+// ---------------------------------------------------------------------------
+
+const ETL_PHASES: Record<string, number> = {
+  'Memuat file Excel': 5, 'Membaca sheet Excel': 20, 'Membangun node RU & Plant': 25,
+  'Membangun node Equipment': 35, 'Membangun node Maintenance Order': 45,
+  'Membangun node RKAP Program': 55, 'Membangun node Reliability': 62,
+  'Membangun node Inspection': 68, 'Membangun node ICU Issue': 74,
+  'Membangun node Readiness': 82, 'Menulis output CSV': 88, 'Import ke database': 90,
+}
+
+function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
+  const [name, setName] = useState(`KG ${new Date().toLocaleDateString('id-ID')}`)
+  const [files, setFiles] = useState<File[]>([])
+  const [job, setJob] = useState<ImportJob>()
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string>()
+
+  useEffect(() => {
+    if (!job || !['queued', 'running'].includes(job.status)) return
+    const id = setInterval(async () => {
+      const next = await api.importStatus(job.id).catch(() => null)
+      if (next) setJob(next)
+    }, 2000)
+    return () => clearInterval(id)
+  }, [job?.id, job?.status])
+
+  const handleFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) setFiles(Array.from(e.target.files))
+  }
+
+  const startEtl = async () => {
+    if (!files.length) return
+    setError(undefined)
+    setUploading(true)
+    try {
+      const j = await api.etlUpload(files, name)
+      setJob(j)
+      setFiles([])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload gagal.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const phasePct = job ? (ETL_PHASES[job.phase] ?? job.progress) : 0
+  const isRunning = job?.status === 'queued' || job?.status === 'running'
+  const isDone = job?.status === 'completed'
+  const isFailed = job?.status === 'failed'
+
+  return (
+    <section className="stack">
+      <div className="panel-heading">
+        <h1>Upload Data Mentah</h1>
+        <p>Upload file Excel SAP/maintenance langsung — ETL berjalan otomatis dan menghasilkan knowledge graph siap pakai.</p>
+      </div>
+
+      {/* File yang didukung */}
+      <section className="panel">
+        <h2>File Excel yang Didukung</h2>
+        <div className="file-grid" style={{ marginTop: '12px' }}>
+          {[
+            { name: 'all_ru_equipment_*.xlsx', desc: 'Master equipment (sheet: Sheet4)', required: true },
+            { name: 'pt02_*.xlsx / pt03_*.xlsx', desc: 'Maintenance order & notification', required: false },
+            { name: 'vw_reportirkapplanactual*.xlsx', desc: 'RKAP / cost program', required: false },
+            { name: 'running_hours_*.xlsx / n_0_*.xlsx', desc: 'Reliability & running hours', required: false },
+            { name: 'inspection_plan*.xlsx', desc: 'Inspection plan', required: false },
+            { name: 'icu_database*.xlsx / icu*.xlsx', desc: 'ICU issue database', required: false },
+            { name: 'apr_*.xlsx / readiness_atg*.xlsx', desc: 'Readiness & operasi', required: false },
+            { name: 'rcps_db_*.xlsx', desc: 'RCPS (sheet: rcps, rekomendasi)', required: false },
+          ].map(f => (
+            <div key={f.name} className={`file-row status-${f.required ? 'ready' : 'optional'}`}>
+              <div className="file-number">{f.required ? 'R' : 'O'}</div>
+              <div className="file-info">
+                <strong style={{ fontFamily: 'monospace', fontSize: '13px' }}>{f.name}</strong>
+                <span>{f.desc}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--muted)' }}>
+          R = Wajib · O = Opsional. Nama file harus mengikuti pola di atas agar terdeteksi otomatis.
+        </p>
+      </section>
+
+      {/* Form upload */}
+      {!isRunning && !isDone && (
+        <section className="panel import-action" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '12px' }}>
+          <div style={{ display: 'grid', gap: '8px' }}>
+            <label htmlFor="etl-name">Nama dataset</label>
+            <input id="etl-name" value={name} onChange={e => setName(e.target.value)} />
+          </div>
+          <div style={{ display: 'grid', gap: '8px' }}>
+            <label htmlFor="etl-files">Pilih file Excel (bisa multi-file sekaligus)</label>
+            <input id="etl-files" type="file" accept=".xlsx,.xls" multiple onChange={handleFiles} />
+            {files.length > 0 && (
+              <div style={{ display: 'grid', gap: '4px', marginTop: '4px' }}>
+                {files.map(f => (
+                  <div key={f.name} style={{ fontSize: '13px', fontFamily: 'monospace', color: 'var(--muted)' }}>
+                    {f.name} — {(f.size / 1024 / 1024).toFixed(1)} MB
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {error && <p className="job-error">{error}</p>}
+          <button className="primary large" disabled={!files.length || uploading} onClick={() => void startEtl()}>
+            {uploading ? 'Mengunggah…' : 'Proses ETL & Buat Knowledge Graph'} <ChevronIcon />
+          </button>
+        </section>
+      )}
+
+      {/* Progress ETL */}
+      {(isRunning || isDone || isFailed) && job && (
+        <section className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <span className="eyebrow">{job.phase}</span>
+              <h3 style={{ margin: '4px 0 0' }}>{job.name}</h3>
+            </div>
+            <b style={{ fontSize: '20px' }}>{job.progress}%</b>
+          </div>
+
+          {/* Progress bar keseluruhan */}
+          <div style={{ height: '8px', background: 'var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{
+              height: '100%', width: `${job.progress}%`,
+              background: isDone ? 'var(--green, #22c55e)' : isFailed ? 'var(--red, #ef4444)' : 'var(--blue, #3b82f6)',
+              transition: 'width 0.3s'
+            }} />
+          </div>
+
+          {/* Tahapan ETL */}
+          <div style={{ display: 'grid', gap: '6px' }}>
+            {Object.entries(ETL_PHASES).map(([phase, pct]) => {
+              const done = job.progress > pct
+              const active = job.phase === phase
+              return (
+                <div key={phase} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                  <span style={{
+                    width: '16px', height: '16px', borderRadius: '50%', flexShrink: 0,
+                    background: done ? 'var(--green, #22c55e)' : active ? 'var(--blue, #3b82f6)' : 'var(--border)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '10px', color: done || active ? 'white' : 'transparent'
+                  }}>
+                    {done ? '✓' : active ? '…' : ''}
+                  </span>
+                  <span style={{ color: done ? 'inherit' : active ? 'var(--blue, #3b82f6)' : 'var(--muted)' }}>
+                    {phase}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+
+          {job.message && <p style={{ fontSize: '13px', color: 'var(--muted)', margin: 0 }}>{job.message}</p>}
+          {job.error && <p className="job-error">{job.error}</p>}
+
+          {/* Notifikasi aman tutup */}
+          {isRunning && job.progress >= 88 && (
+            <div style={{ padding: '10px 14px', background: 'var(--green-subtle, #dcfce7)', borderRadius: '8px', border: '1px solid var(--green, #22c55e)', fontSize: '13px' }}>
+              <b style={{ color: 'var(--green, #16a34a)' }}>Import berjalan di server</b>
+              <p style={{ margin: '4px 0 0' }}>Browser sudah aman untuk ditutup. Proses tetap berjalan di background Railway.</p>
+            </div>
+          )}
+
+          {/* Selesai */}
+          {isDone && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ padding: '12px 16px', background: 'var(--green-subtle, #dcfce7)', borderRadius: '8px', border: '1px solid var(--green, #22c55e)' }}>
+                <b style={{ color: 'var(--green, #16a34a)' }}>✓ Knowledge Graph berhasil dibuat</b>
+                <p style={{ margin: '4px 0 0', fontSize: '13px' }}>{job.message}</p>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="primary" onClick={() => onNavigate('graph')}>Buka Graph Explorer <ChevronIcon /></button>
+                <button className="secondary" onClick={() => { setJob(undefined); setError(undefined) }}>Upload lagi</button>
+              </div>
+            </div>
+          )}
+
+          {isFailed && (
+            <button className="secondary" onClick={() => { setJob(undefined); setError(undefined) }}>Coba lagi</button>
+          )}
+        </section>
+      )}
     </section>
   )
 }
@@ -2189,7 +2382,7 @@ const depthDomainLabels: Record<string, string> = {
 }
 
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Dataset manager' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', etl: 'Data Mentah', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Dataset manager' })[page]
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }

@@ -58,6 +58,12 @@ export const api = {
   },
   commitChunkedUpload: (uploadId: string) =>
     request<ImportJob>(`/imports/chunked/${uploadId}/commit`, { method: 'POST' }),
+  etlUpload: (files: File[], name: string) => {
+    const form = new FormData()
+    files.forEach(f => form.append('files', f, f.name))
+    form.append('name', name)
+    return request<ImportJob>('/etl/upload', { method: 'POST', body: form })
+  },
   datasets: () => request<DatasetSummary[]>('/datasets'),
   dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),
   renameDataset: (id: string, name: string) =>
