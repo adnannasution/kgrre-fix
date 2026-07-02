@@ -377,15 +377,34 @@ const CHUNK_SIZE = 5 * 1024 * 1024 // 5 MB
 
 type ChunkFileState = { file: File; uploaded: number; total: number; done: boolean }
 
+const CSV_FILES = [
+  { name: 'nodes.csv', required: true },
+  { name: 'relationships.csv', required: true },
+  { name: 'domain_equipment.csv', required: false },
+  { name: 'domain_reliability.csv', required: false },
+  { name: 'domain_maintenance.csv', required: false },
+  { name: 'domain_readiness_operation.csv', required: false },
+  { name: 'domain_inspection_issue.csv', required: false },
+  { name: 'domain_cost_program.csv', required: false },
+]
+
+type UploadPhase = 'idle' | 'uploading' | 'committed' | 'done' | 'error'
+
 function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJobStart: (job: ImportJob) => void; disabled: boolean }) {
   const [files, setFiles] = useState<Record<string, ChunkFileState>>({})
-  const [uploading, setUploading] = useState(false)
+  const [phase, setPhase] = useState<UploadPhase>('idle')
+  const [activeFile, setActiveFile] = useState<string>()
   const [error, setError] = useState<string>()
 
   const handleFile = (fileName: string, file: File | undefined) => {
     if (!file) return
     setFiles(prev => ({ ...prev, [fileName]: { file, uploaded: 0, total: Math.ceil(file.size / CHUNK_SIZE), done: false } }))
   }
+
+  // total progress across all selected files
+  const totalChunks = Object.values(files).reduce((s, f) => s + f.total, 0)
+  const uploadedChunks = Object.values(files).reduce((s, f) => s + f.uploaded, 0)
+  const uploadPct = totalChunks > 0 ? Math.round((uploadedChunks / totalChunks) * 100) : 0
 
   const startUpload = async () => {
     setError(undefined)
@@ -394,10 +413,11 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
       setError('nodes.csv dan relationships.csv wajib dipilih.')
       return
     }
-    setUploading(true)
+    setPhase('uploading')
     try {
       const { upload_id } = await api.initChunkedUpload(name, entries.map(([n, s]) => ({ name: n, total_chunks: s.total })))
       for (const [fileName, state] of entries) {
+        setActiveFile(fileName)
         for (let i = 0; i < state.total; i++) {
           const start = i * CHUNK_SIZE
           const chunk = state.file.slice(start, start + CHUNK_SIZE)
@@ -406,41 +426,87 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
         }
         setFiles(prev => ({ ...prev, [fileName]: { ...prev[fileName], done: true } }))
       }
+      setActiveFile(undefined)
       const job = await api.commitChunkedUpload(upload_id)
       onJobStart(job)
+      setPhase('committed')
       setFiles({})
     } catch (e) {
+      setPhase('error')
       setError(e instanceof Error ? e.message : 'Upload gagal.')
-    } finally {
-      setUploading(false)
     }
   }
 
   const allSelected = files['nodes.csv'] && files['relationships.csv']
+  const fileSizeMb = (f: ChunkFileState) => (f.file.size / 1024 / 1024).toFixed(1)
+  const filePct = (f: ChunkFileState) => f.total > 0 ? Math.round((f.uploaded / f.total) * 100) : 0
 
   return (
-    <section className="panel import-action" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '12px' }}>
+    <section className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
       <div>
-        <label>Upload file CSV langsung (chunked — cocok untuk file besar)</label>
-        <p className="warning-text"><UploadIcon />File dipotong otomatis {CHUNK_SIZE / 1024 / 1024} MB per chunk. Import tetap berjalan di server meski browser ditutup.</p>
+        <label style={{ fontWeight: 600 }}>Upload file CSV langsung (chunked — cocok untuk file besar)</label>
+        <p className="warning-text" style={{ marginTop: '4px' }}><UploadIcon />File dipotong otomatis {CHUNK_SIZE / 1024 / 1024} MB per chunk sehingga tidak timeout.</p>
       </div>
-      <div style={{ display: 'grid', gap: '8px' }}>
-        {(['nodes.csv', 'relationships.csv', 'domain_equipment.csv', 'domain_reliability.csv', 'domain_maintenance.csv', 'domain_readiness_operation.csv', 'domain_inspection_issue.csv', 'domain_cost_program.csv'] as const).map(fn => (
-          <div key={fn} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ minWidth: '220px', fontFamily: 'monospace', fontSize: '13px' }}>{fn}{fn === 'nodes.csv' || fn === 'relationships.csv' ? ' *' : ''}</span>
-            <input type="file" accept=".csv" disabled={uploading} onChange={e => handleFile(fn, e.target.files?.[0])} />
-            {files[fn] && (
-              <span style={{ fontSize: '12px', color: files[fn].done ? 'var(--green)' : 'var(--muted)' }}>
-                {files[fn].done ? '✓ selesai' : uploading ? `${files[fn].uploaded}/${files[fn].total} chunk` : `${(files[fn].file.size / 1024 / 1024).toFixed(1)} MB`}
-              </span>
-            )}
+
+      <div style={{ display: 'grid', gap: '10px' }}>
+        {CSV_FILES.map(({ name: fn, required }) => {
+          const state = files[fn]
+          const pct = state ? filePct(state) : 0
+          const isActive = activeFile === fn
+          return (
+            <div key={fn} style={{ display: 'grid', gap: '4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ minWidth: '230px', fontFamily: 'monospace', fontSize: '13px' }}>
+                  {fn}{required ? <span style={{ color: 'var(--orange, #f59e0b)', marginLeft: '4px' }}>*</span> : ''}
+                </span>
+                <input type="file" accept=".csv" disabled={phase === 'uploading'} onChange={e => handleFile(fn, e.target.files?.[0])} />
+                {state && (
+                  <span style={{ fontSize: '12px', minWidth: '100px', color: state.done ? 'var(--green, #22c55e)' : isActive ? 'var(--blue, #3b82f6)' : 'var(--muted)' }}>
+                    {state.done
+                      ? '✓ selesai'
+                      : isActive
+                        ? `${pct}% · ${state.uploaded}/${state.total} chunk`
+                        : `${fileSizeMb(state)} MB · siap`}
+                  </span>
+                )}
+              </div>
+              {state && phase === 'uploading' && (
+                <div style={{ height: '4px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden', marginLeft: '230px' }}>
+                  <div style={{ height: '100%', width: `${pct}%`, background: state.done ? 'var(--green, #22c55e)' : 'var(--blue, #3b82f6)', transition: 'width 0.2s' }} />
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {phase === 'uploading' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+            <span>Total upload: <b>{uploadedChunks}/{totalChunks} chunk</b>{activeFile ? ` · sedang: ${activeFile}` : ''}</span>
+            <b>{uploadPct}%</b>
           </div>
-        ))}
-      </div>
+          <div style={{ height: '8px', background: 'var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${uploadPct}%`, background: 'var(--blue, #3b82f6)', transition: 'width 0.15s' }} />
+          </div>
+          <p style={{ fontSize: '12px', color: 'var(--muted)', margin: 0 }}>Jangan tutup browser selama upload berlangsung.</p>
+        </div>
+      )}
+
+      {phase === 'committed' && (
+        <div style={{ padding: '12px 16px', background: 'var(--green-subtle, #dcfce7)', borderRadius: '8px', border: '1px solid var(--green, #22c55e)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <b style={{ color: 'var(--green, #16a34a)' }}>✓ Upload selesai — import berjalan di server</b>
+          <p style={{ margin: 0, fontSize: '13px' }}>Browser sudah aman untuk ditutup. Proses import tetap berjalan di background Railway dan tidak terpengaruh koneksi browser.</p>
+        </div>
+      )}
+
       {error && <p className="job-error">{error}</p>}
-      <button className="secondary large" disabled={!allSelected || uploading || disabled} onClick={() => void startUpload()}>
-        {uploading ? 'Mengunggah…' : 'Upload & Import CSV'} <ChevronIcon />
-      </button>
+
+      {phase !== 'committed' && (
+        <button className="secondary large" disabled={!allSelected || phase === 'uploading' || disabled} onClick={() => void startUpload()}>
+          {phase === 'uploading' ? `Mengunggah… ${uploadPct}%` : 'Upload & Import CSV'} <ChevronIcon />
+        </button>
+      )}
     </section>
   )
 }
