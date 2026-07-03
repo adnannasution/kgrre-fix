@@ -397,23 +397,23 @@ def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
         ),
         ranked AS (
             SELECT *, row_number() OVER (
-                PARTITION BY refinery_unit, equipment_code_normalized
+                PARTITION BY coalesce(refinery_unit, 'UNKNOWN'), equipment_code_normalized
                 ORDER BY try_cast(date_update_data AS DATE) DESC NULLS LAST,
                          ((functional_location IS NOT NULL)::INTEGER +
                           (description IS NOT NULL)::INTEGER +
                           (equipment_group IS NOT NULL)::INTEGER) DESC,
                          source_file, source_row DESC
             ) AS rn
-            FROM base WHERE refinery_unit IS NOT NULL
+            FROM base
         )
-        SELECT 'node_equipment_' || md5(refinery_unit || '|' || equipment_code_normalized) AS equipment_id, *
+        SELECT 'node_equipment_' || md5(coalesce(refinery_unit, 'UNKNOWN') || '|' || equipment_code_normalized) AS equipment_id, *
         FROM ranked WHERE rn = 1
     """)
 
     con.execute("""
         INSERT INTO node_raw
         SELECT equipment_id, 'equipment',
-               refinery_unit || '|' || equipment_code_normalized,
+               coalesce(refinery_unit, 'UNKNOWN') || '|' || equipment_code_normalized,
                coalesce(description, equipment_code_raw), 'asset',
                json_object(
                    'refinery_unit', refinery_unit,
@@ -1305,6 +1305,19 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         job.progress = 25
         job.phase = "Membangun node Equipment"
         _safe("Equipment", _build_equipment_nodes, con, domain_views["equipment"])
+        # Pastikan equipment_master ada agar builder lain tidak crash jika equipment builder gagal
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS equipment_master (
+                equipment_id VARCHAR, equipment_code_normalized VARCHAR,
+                equipment_code_raw VARCHAR, refinery_unit VARCHAR,
+                plant VARCHAR, functional_location VARCHAR,
+                equipment_group VARCHAR, description VARCHAR,
+                criticallity VARCHAR, plant_area VARCHAR,
+                date_update_data VARCHAR, source_file VARCHAR,
+                source_sheet VARCHAR, source_row INTEGER,
+                source_record_id VARCHAR, rn INTEGER
+            )
+        """)
 
         job.progress = 35
         job.phase = "Membangun node Maintenance Order"
