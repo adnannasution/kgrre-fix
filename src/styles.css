@@ -491,3 +491,39 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Generate button */
+.generate-btn { background: #059669; color: #fff; border: none; border-radius: var(--r-sm); padding: 5px 10px; font-size: var(--fs-xs); font-weight: 800; cursor: pointer; transition: background var(--dur) var(--ease); }
+.generate-btn:hover { background: #047857; }
+.generate-btn.active { background: #dc2626; }
+.generate-btn.active:hover { background: #b91c1c; }
+
+/* Diagnosis modal */
+.diagnosis-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 1000; display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; overflow-y: auto; }
+.diagnosis-modal { background: var(--surface); border-radius: var(--r-md); box-shadow: 0 24px 64px rgba(0,0,0,.25); width: 100%; max-width: 900px; min-height: 200px; display: flex; flex-direction: column; }
+.diagnosis-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 24px 16px; border-bottom: 1px solid var(--line-soft); }
+.diagnosis-modal-header h2 { margin: 4px 0 0; font-size: var(--fs-lg); color: var(--text); }
+.diagnosis-modal-close { background: transparent; border: none; font-size: 18px; cursor: pointer; color: var(--muted); padding: 4px 8px; border-radius: var(--r-sm); }
+.diagnosis-modal-close:hover { background: var(--line-soft); }
+.diagnosis-generating { display: flex; align-items: center; gap: 10px; padding: 14px 24px; color: var(--blue); font-size: var(--fs-sm); font-weight: 700; border-bottom: 1px solid var(--line-soft); }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--blue); border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.diagnosis-error { padding: 14px 24px; background: #fef2f2; color: #dc2626; border-bottom: 1px solid #fecaca; font-size: var(--fs-sm); }
+.diagnosis-empty { padding: 40px 24px; color: var(--muted); text-align: center; }
+.diagnosis-body { padding: 20px 24px; flex: 1; overflow-y: auto; }
+.diagnosis-section { margin-bottom: 24px; }
+.diagnosis-section-heading { font-size: var(--fs-md); font-weight: 900; color: var(--text); margin: 0 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--blue); }
+.diagnosis-section-fact-finding .diagnosis-section-heading { color: #059669; border-color: #059669; }
+.diagnosis-section-summary .diagnosis-section-heading { color: #7c3aed; border-color: #7c3aed; }
+.diagnosis-body p { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--text); line-height: 1.6; }
+.diagnosis-list-item { padding-left: 4px; }
+.diagnosis-bullet { padding-left: 16px; position: relative; }
+.diagnosis-bullet::before { content: "•"; position: absolute; left: 4px; }
+.diagnosis-table-wrap { overflow-x: auto; margin: 10px 0; }
+.diagnosis-table { border-collapse: collapse; font-size: var(--fs-xs); width: 100%; }
+.diagnosis-table th, .diagnosis-table td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+.diagnosis-table th { background: var(--line-soft); font-weight: 900; color: var(--text); white-space: nowrap; }
+.diagnosis-table tr:nth-child(even) td { background: #fafafa; }
+@media (prefers-color-scheme: dark) {
+  .diagnosis-modal { background: #1e293b; }
+  .diagnosis-table tr:nth-child(even) td { background: #0f172a; }
+}

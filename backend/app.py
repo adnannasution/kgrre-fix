@@ -2954,6 +2954,39 @@ def csv_cell(value) -> str:
     return '"' + ("" if value is None else str(value)).replace('"', '""') + '"'
 
 
+class DiagnosisGenerateRequest(BaseModel):
+    prompt: str
+    role: str = "engineer"
+
+
+@app.post("/api/diagnosis/generate")
+def diagnosis_generate(req: DiagnosisGenerateRequest):
+    import os
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Paket anthropic belum terpasang di server.")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY belum dikonfigurasi di server.")
+
+    client = _anthropic.Anthropic(api_key=api_key)
+
+    def _stream():
+        with client.messages.stream(
+            model="claude-opus-4-8",
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            messages=[{"role": "user", "content": req.prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield f"data: {json.dumps({'text': text})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 DIST = Path(__file__).resolve().parents[1] / "dist"
 if DIST.exists():
     app.mount("/", StaticFiles(directory=DIST, html=True), name="artifact")
