@@ -107,6 +107,19 @@ def insert_dataset(dataset: dict) -> None:
         )
 
 
+def update_dataset_counts(dataset_id: str, node_count: int, edge_count: int, issue_count: int, workbooks: list) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE dataset_catalog
+            SET node_count = %s, edge_count = %s, issue_count = %s,
+                workbooks = %s::jsonb, updated_at = now()
+            WHERE id = %s
+            """,
+            [node_count, edge_count, issue_count, json.dumps(workbooks), dataset_id],
+        )
+
+
 def rename_dataset(dataset_id: str, name: str) -> dict | None:
     with connection() as conn:
         conn.execute(

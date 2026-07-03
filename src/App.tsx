@@ -2474,6 +2474,10 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
   const [expanded, setExpanded] = useState<string | null>(null)
   const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
   const [fileLoading, setFileLoading] = useState<string | null>(null)
+  const [syncTarget, setSyncTarget] = useState<DatasetSummary | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncJob, setSyncJob] = useState<ImportJob | null>(null)
+  const syncInputRef = useRef<HTMLInputElement>(null)
 
   const toggle = async (id: string) => {
     if (expanded === id) { setExpanded(null); return }
@@ -2527,6 +2531,38 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
       onResetAll()
     } finally {
       setResetting(false)
+    }
+  }
+
+  const startSync = (dataset: DatasetSummary) => {
+    setSyncTarget(dataset)
+    setSyncJob(null)
+    setTimeout(() => syncInputRef.current?.click(), 50)
+  }
+
+  const handleSyncFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!syncTarget || !e.target.files?.length) return
+    const files = Array.from(e.target.files)
+    e.target.value = ''
+    setSyncing(true)
+    try {
+      const job = await api.etlSync(syncTarget.id, files)
+      setSyncJob(job)
+      const poll = setInterval(async () => {
+        const updated = await api.importStatus(job.id)
+        setSyncJob(updated)
+        if (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'cancelled') {
+          clearInterval(poll)
+          setSyncing(false)
+          if (updated.status === 'completed') {
+            setFileRows(prev => { const n = { ...prev }; delete n[syncTarget.id]; return n })
+            await onRefresh()
+          }
+        }
+      }, 1500)
+    } catch (err) {
+      setSyncing(false)
+      alert('Sinkronisasi gagal: ' + String(err))
     }
   }
 
@@ -2612,6 +2648,14 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                         </button>
                         <button className="secondary small" onClick={() => void rename(dataset)}>Rename</button>
                         <button
+                          className="secondary small"
+                          onClick={() => startSync(dataset)}
+                          disabled={syncing}
+                          title="Sinkronisasi ulang knowledge graph dari file Excel baru"
+                        >
+                          {syncing && syncTarget?.id === dataset.id ? '⏳' : '🔄 Sinkron'}
+                        </button>
+                        <button
                           className="icon-button danger"
                           onClick={() => void remove(dataset)}
                           disabled={deleting === dataset.id}
@@ -2686,6 +2730,35 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Hidden file input untuk sync */}
+      <input
+        ref={syncInputRef}
+        type="file"
+        accept=".xlsx,.xls"
+        multiple
+        style={{ display: 'none' }}
+        onChange={e => void handleSyncFiles(e)}
+      />
+
+      {/* Status sinkronisasi */}
+      {syncTarget && syncJob && (
+        <div className="sync-status-panel">
+          <div className="sync-status-header">
+            <span>Sinkronisasi: <strong>{syncTarget.name}</strong></span>
+            {(syncJob.status === 'completed' || syncJob.status === 'failed') && (
+              <button className="secondary small" onClick={() => { setSyncTarget(null); setSyncJob(null) }}>✕ Tutup</button>
+            )}
+          </div>
+          <div className="sync-progress-bar">
+            <div className="sync-progress-fill" style={{ width: `${syncJob.progress}%` }} />
+          </div>
+          <div className="sync-phase">{syncJob.phase}</div>
+          {syncJob.message && <div className="sync-message">{syncJob.message}</div>}
+          {syncJob.status === 'completed' && <div className="sync-ok">✅ Sinkronisasi selesai</div>}
+          {syncJob.status === 'failed' && <div className="sync-err">❌ Gagal: {syncJob.error}</div>}
         </div>
       )}
     </section>

@@ -413,6 +413,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .reset-all-btn:hover:not(:disabled) { background: var(--red); color: #fff; }
 .reset-all-btn:disabled { opacity: .5; cursor: not-allowed; }
 .hero-stat-num { display: block; font-family: var(--display); font-size: 48px; font-weight: 900; color: var(--blue); line-height: 1; }
+.sync-status-panel { margin-top: var(--space-md); padding: var(--space-md); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.sync-status-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: var(--fs-sm); }
+.sync-progress-bar { height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; margin-bottom: 8px; }
+.sync-progress-fill { height: 100%; background: var(--blue); border-radius: 99px; transition: width .4s ease; }
+.sync-phase { font-size: var(--fs-xs); color: var(--muted); margin-bottom: 4px; }
+.sync-message { font-size: var(--fs-xs); color: var(--muted); word-break: break-word; }
+.sync-ok { margin-top: 8px; font-size: var(--fs-xs); color: var(--green); font-weight: 700; }
+.sync-err { margin-top: 8px; font-size: var(--fs-xs); color: var(--red); font-weight: 700; word-break: break-word; }
 
 .empty-state { min-height: 360px; display: grid; place-content: center; justify-items: center; text-align: center; padding: var(--space-2xl); }.empty-state > div { width: 64px; height: 64px; display: grid; place-items: center; color: var(--blue); background: #dbeafe; border-radius: 50%; }.empty-state svg { width: 28px; height: 28px; }.empty-state h2 { margin: var(--space-md) 0 7px; font-size: 18px; }.empty-state p { color: var(--muted); font-size: 10px; max-width: 430px; line-height: 1.7; }.empty-state .primary { margin-top: var(--space-xs); }
 .error-banner { margin: calc(-1 * var(--space-sm)) 0 var(--space-md); padding: var(--space-sm) var(--space-md); border: 1px solid #d23f4740; background: #d23f470f; color: #b5343b; border-radius: var(--r-sm); display: flex; gap: 8px; align-items: center; font-size: 10px; }.error-banner svg { width: 14px; }.error-banner button { margin-left: auto; border: 0; background: transparent; cursor: pointer; }

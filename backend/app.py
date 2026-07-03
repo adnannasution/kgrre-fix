@@ -313,6 +313,35 @@ async def etl_upload(
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/datasets/{dataset_id}/sync")
+async def etl_sync(
+    dataset_id: str,
+    files: list[UploadFile] = File(...),
+):
+    """Sinkronisasi ulang knowledge graph dari file Excel baru tanpa membuat dataset baru."""
+    row = get_dataset_row(dataset_id)
+    if not row:
+        raise HTTPException(404, "Dataset tidak ditemukan.")
+    if not files:
+        raise HTTPException(400, "Minimal satu file Excel diperlukan.")
+    saved: list[Path] = []
+    etl_dir = UPLOADS_DIR / _uuid.uuid4().hex
+    etl_dir.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        if not f.filename or not f.filename.lower().endswith((".xlsx", ".xls")):
+            raise HTTPException(400, f"File {f.filename} bukan format Excel (.xlsx/.xls).")
+        dest = etl_dir / f.filename
+        with dest.open("wb") as fh:
+            while chunk := await f.read(1024 * 1024):
+                fh.write(chunk)
+        saved.append(dest)
+    try:
+        job = start_etl_import(row["name"], saved, existing_dataset_id=dataset_id)
+        return job.public()
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/imports/{job_id}")
 def import_status(job_id: str):
     job = JOBS.get(job_id)
