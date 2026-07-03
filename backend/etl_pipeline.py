@@ -24,52 +24,149 @@ ETL_JOBS_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Sheet domain detection — sesuai pola dari Colab notebook
+# Sheet domain detection — berbasis konten kolom (nama file & sheet bebas)
 # ---------------------------------------------------------------------------
 
-def _key(filename: str, sheet: str) -> str:
-    return f"{Path(filename).stem} {sheet}".lower()
+def _col_set(headers: list[str]) -> set[str]:
+    """Normalisasi header kolom ke set lowercase underscore."""
+    return {re.sub(r'[^a-z0-9]+', '_', h.strip().lower()).strip('_') for h in headers if h and str(h).strip()}
 
 
-def _detect_domain(filename: str, sheet: str) -> str | None:
+def _detect_domain_by_columns(headers: list[str]) -> str | None:
+    """Deteksi domain dari nama kolom — tidak perlu nama file tertentu."""
+    cols = _col_set(headers)
+
+    def has(*names: str) -> bool:
+        return any(c in cols for c in names)
+
+    def has_sub(sub: str) -> bool:
+        return any(sub in c for c in cols)
+
+    # PLO — kolom sangat spesifik
+    if has('nomor_ijin', 'no_ijin', 'permit_number', 'nama_plo', 'status_plo'):
+        return 'plo'
+    if has('date_expired', 'masa_berlaku') and has('kapasitas', 'cakupan', 'nama_plo', 'nomor_ijin'):
+        return 'plo'
+
+    # OA Issue — mi_pi sangat khas
+    if has('mi_pi', 'mip'):
+        return 'oa_issue'
+
+    # ICU Issue — mitigation/permanent_solution sangat spesifik
+    if has('mitigation', 'permanent_solution') or (has('icu_status', 'icu') and has('issue', 'deskripsi_issue')):
+        return 'icu_issue'
+    if has('target_closed', 'tanggal_target') and has('mitigation') and has('issue', 'deskripsi_issue'):
+        return 'icu_issue'
+
+    # Readiness — status_operation sangat khas dan tidak ada di domain lain
+    if has('status_operation', 'status_operasi'):
+        return 'readiness'
+    if has('status_item', 'rtl') and has('period_date', 'month_update'):
+        return 'readiness'
+
+    # OA Availability
+    if has('actual_target') and has('value_perc', 'month_update', 'bulan'):
+        return 'oa_availability'
+    if has('operational_availability') or (has_sub('oa') and has('value_perc', 'actual_target')):
+        return 'oa_availability'
+
+    # Reliability — mtbf/mttr/running hours sangat spesifik
+    if has('mtbf', 'mttr', 'reliability_index'):
+        return 'reliability'
+    if has('running_hours', 'jam_operasi', 'run_hours', 'operating_hours'):
+        return 'reliability'
+    if has('failure_date', 'failure_mode', 'breakdown_date') and has('equipment', 'tag_number', 'tag_no'):
+        return 'reliability'
+
+    # RKAP — cost_program/cost_element spesifik
+    if has('cost_program', 'cost_element', 'cost_center'):
+        return 'rkap'
+    if has_sub('rkap') or has_sub('irkap'):
+        return 'rkap'
+    if has('plan_idr', 'actual_idr', 'budget_idr') or (has('plan', 'actual', 'realisasi') and has('program', 'kegiatan')):
+        return 'rkap'
+
+    # Inspection plan
+    if has_sub('inspection') and has('equipment', 'tag_number', 'tag_no', 'functional_loc', 'functional_location'):
+        return 'inspection'
+    if has('next_inspection', 'last_inspection', 'inspection_date', 'due_inspection'):
+        return 'inspection'
+
+    # RCPS — root cause
+    if has('root_cause', 'akar_masalah') or (has('recommendation', 'rekomendasi') and has('finding', 'temuan')):
+        return 'rcps_recommendation'
+    if has_sub('rcps') or has('fishbone', 'why_1', 'why_2', 'why_3'):
+        return 'rcps'
+
+    # Org issue (sederhana) — issue list tanpa mitigation detail
+    if has('issue', 'deskripsi_issue', 'paf') and has('responsible', 'pic', 'penanggung_jawab', 'priority'):
+        return 'org_issue'
+
+    # Equipment Master vs Maintenance Order — paling ambigu
+    eq_score = 0
+    mo_score = 0
+
+    # Equipment master signals
+    if has('functional_loc', 'functional_location', 'floc'):          eq_score += 4
+    if has('maintplant', 'planning_plant', 'maint_plant'):            eq_score += 3
+    if has('catalog_profile', 'equipment_group', 'object_type'):      eq_score += 3
+    if has('criticallity', 'criticality', 'critical_rank'):           eq_score += 3
+    if has('description_of_technical_object'):                         eq_score += 3
+    if has('equipment', 'tag_number', 'tag_no', 'tag_num'):           eq_score += 2
+    if has('plant_area', 'location', 'plant_section'):                eq_score += 1
+
+    # Maintenance order signals
+    if has('order', 'order_number', 'aufnr', 'maint_order', 'order_no'): mo_score += 4
+    if has('work_center', 'main_workcenter', 'arbpl', 'workcenter'):  mo_score += 4
+    if has('order_type', 'auart', 'order_category'):                  mo_score += 3
+    if has('notification', 'notification_no', 'qmnum'):               mo_score += 3
+    if has('system_status', 'user_status', 'sttxt'):                  mo_score += 3
+    if has('actual_start', 'actual_finish', 'basic_start', 'basic_finish', 'gstrp', 'gltrp'): mo_score += 2
+    if has('equipment', 'tag_number', 'tag_no'):                      mo_score += 1
+
+    if eq_score >= 5 and eq_score > mo_score:
+        return 'equipment'
+    if mo_score >= 5 and mo_score > eq_score:
+        return 'maintenance'
+    if eq_score >= 4 and eq_score > mo_score + 2:
+        return 'equipment'
+    if mo_score >= 4 and mo_score > eq_score + 2:
+        return 'maintenance'
+
+    return None
+
+
+def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) -> str | None:
+    """Deteksi domain sheet. Kolom adalah sinyal utama; nama file/sheet hanya fallback."""
+    # 1. Deteksi dari konten kolom (paling reliable — bebas nama file)
+    if headers:
+        by_col = _detect_domain_by_columns(headers)
+        if by_col:
+            return by_col
+
+    # 2. Fallback ke nama file/sheet untuk kasus ambigu atau kolom kosong
     stem = Path(filename).stem.lower()
     sheet_l = sheet.lower()
-    k = _key(filename, sheet)
+    k = f"{stem} {sheet_l}"
 
-    if "all_ru_equipment" in stem:
-        return "equipment"
-    if stem.startswith(("pt02_", "pt03_")):
-        return "maintenance"
-    if any(x in k for x in ("vw_reportirkapplanactual", "reportirkapplanactual", "cost_program")) \
+    if "all_ru_equipment" in stem:                                     return "equipment"
+    if stem.startswith(("pt02_", "pt03_")):                           return "maintenance"
+    if any(x in k for x in ("vw_reportirkapplanactual", "cost_program")) \
             or (any(x in k for x in ("rkap", "irkap")) and "alias_map" not in stem):
         return "rkap"
-    if stem.startswith("running_hours_") or stem.startswith("n_0_"):
-        return "reliability"
-    if "inspection_plan" in k:
-        return "inspection"
+    if stem.startswith(("running_hours_", "n_0_")):                   return "reliability"
+    if "inspection_plan" in k:                                         return "inspection"
     if any(x in k for x in ("apr_", "readiness_atg", "power_steam", "weekly_monitoring")):
         return "readiness"
-    if any(x in k for x in ("issue_list", "paf_issue")):
-        return "org_issue"
-    if any(x in k for x in ("icu_database", "icu")):
-        return "icu_issue"
+    if any(x in k for x in ("issue_list", "paf_issue")):             return "org_issue"
+    if any(x in k for x in ("icu_database", "icu")):                 return "icu_issue"
     if "rcps" in stem:
-        if any(x in sheet_l for x in ("rekomendasi", "recommendation")):
-            return "rcps_recommendation"
-        return "rcps"
-    # OA_Data: deteksi dari nama sheet, fallback ke sheet pertama jika tidak dikenali
-    if "oa_data" in stem:
-        if "allowance" in sheet_l or "unplanned" in sheet_l:
-            return "oa_allowance"
-        if "operational" in sheet_l or "availability" in sheet_l or "oa" in sheet_l:
-            return "oa_availability"
-        if "issue" in sheet_l:
-            return "oa_issue"
-        # fallback: sheet pertama → availability
+        return "rcps_recommendation" if any(x in sheet_l for x in ("rekomendasi", "recommendation")) else "rcps"
+    if "oa_data" in stem or "oa_" in stem:
+        if any(x in sheet_l for x in ("allowance", "unplanned")):    return "oa_allowance"
+        if any(x in sheet_l for x in ("issue", "permasalahan")):     return "oa_issue"
         return "oa_availability"
-    # PLO: Perizinan Layak Operasi
-    if stem.startswith("plo") or "plo_" in stem:
-        return "plo"
+    if stem.startswith("plo") or "plo_" in stem:                      return "plo"
     return None
 
 
@@ -77,20 +174,39 @@ def _detect_domain(filename: str, sheet: str) -> str | None:
 # Excel → DuckDB loader
 # ---------------------------------------------------------------------------
 
-def _load_excel_to_duckdb(con: duckdb.DuckDBPyConnection, path: Path) -> list[tuple[str, str, str]]:
-    """Baca semua sheet dari Excel, load ke DuckDB. Return list (table_name, filename, sheet)."""
-    loaded: list[tuple[str, str, str]] = []
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    for sheet_name in wb.sheetnames:
+def _read_sheet_rows(path: Path, sheet_name: str) -> list[tuple]:
+    """Baca baris sheet. Coba read_only=True dulu; fallback ke normal jika hasilnya <= 1 baris."""
+    for read_only in (True, False):
+        wb = openpyxl.load_workbook(path, read_only=read_only, data_only=True)
         ws = wb[sheet_name]
         rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+        if len(rows) > 1:
+            return rows
+        if not read_only:
+            break
+    return rows
+
+
+def _load_excel_to_duckdb(con: duckdb.DuckDBPyConnection, path: Path) -> list[tuple[str, str, str, list[str]]]:
+    """Baca semua sheet dari Excel, load ke DuckDB. Return list (table_name, filename, sheet, raw_headers)."""
+    import pandas as pd
+    loaded: list[tuple[str, str, str, list[str]]] = []
+
+    wb_meta = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    sheet_names = wb_meta.sheetnames
+    wb_meta.close()
+
+    for sheet_name in sheet_names:
+        rows = _read_sheet_rows(path, sheet_name)
         if not rows:
             continue
-        headers = [str(c).strip() if c is not None else f"col_{i}" for i, c in enumerate(rows[0])]
-        # deduplikasi header
+        raw_headers = [str(c).strip() if c is not None else f"col_{i}" for i, c in enumerate(rows[0])]
+
+        # deduplikasi header untuk DuckDB
         seen: dict[str, int] = {}
         clean_headers: list[str] = []
-        for h in headers:
+        for h in raw_headers:
             h_clean = re.sub(r'[^a-zA-Z0-9_]', '_', h).lower() or "col"
             if h_clean in seen:
                 seen[h_clean] += 1
@@ -99,27 +215,22 @@ def _load_excel_to_duckdb(con: duckdb.DuckDBPyConnection, path: Path) -> list[tu
                 seen[h_clean] = 0
             clean_headers.append(h_clean)
 
-        data_rows = []
-        for row in rows[1:]:
-            data_rows.append(tuple(
-                str(v).strip() if v is not None else None for v in row
-            ))
-
+        data_rows = [
+            tuple(str(v).strip() if v is not None else None for v in row)
+            for row in rows[1:]
+        ]
         if not data_rows:
             continue
 
-        import pandas as pd
         df = pd.DataFrame(data_rows, columns=clean_headers)
-        # tambahkan kolom sumber
         df["_input_source_file"] = path.name
         df["_input_source_sheet"] = sheet_name
         df["_source_row"] = range(2, len(df) + 2)
 
         tname = f"src_{uuid.uuid4().hex[:8]}"
         con.register(tname, df)
-        loaded.append((tname, path.name, sheet_name))
+        loaded.append((tname, path.name, sheet_name, raw_headers))
 
-    wb.close()
     return loaded
 
 
@@ -1159,8 +1270,8 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         for path in excel_paths:
             job.message = f"Membaca {path.name}…"
             loaded = _load_excel_to_duckdb(con, path)
-            for tname, filename, sheet in loaded:
-                domain = _detect_domain(filename, sheet)
+            for tname, filename, sheet, headers in loaded:
+                domain = _detect_domain(filename, sheet, headers)
                 if domain and domain in domain_views:
                     domain_views[domain].append(tname)
 
