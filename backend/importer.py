@@ -12,7 +12,7 @@ from pathlib import Path
 
 import csv as csvmod
 
-from .config import UPLOADS_DIR, insert_dataset
+from .config import UPLOADS_DIR, insert_dataset, update_dataset_counts
 from .database import enable_rls, fetch_tuple, finalize, initialize, scoped
 from .scanner import REQUIRED_FILES, package_file_type, scan_folder, scan_package, sha256
 
@@ -128,8 +128,12 @@ def _select_ready_files(scan: dict, allow_partial: bool) -> list[dict]:
     return selected
 
 
-def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_package: bool) -> None:
-    dataset_id = uuid.uuid4().hex
+def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_package: bool,
+                existing_dataset_id: str | None = None) -> None:
+    is_sync = existing_dataset_id is not None
+    dataset_id = existing_dataset_id if is_sync else uuid.uuid4().hex
+    if is_sync:
+        _drop_dataset_data(dataset_id)
     try:
         job.status = "running"
         job.phase = "Fingerprint"
@@ -172,16 +176,22 @@ def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_
                 "(SELECT count(*) FROM import_issue)"
             )
 
-            insert_dataset({
-                "id": dataset_id,
-                "name": job.name,
-                "mode": "etl_csv_graph",
-                "node_count": counts[0],
-                "edge_count": counts[1],
-                "issue_count": counts[2],
-                "workbooks": [item["name"] for item in fingerprints],
-                "uploaded_package": uploaded_package,
-            })
+            if is_sync:
+                update_dataset_counts(
+                    dataset_id, counts[0], counts[1], counts[2],
+                    [item["name"] for item in fingerprints],
+                )
+            else:
+                insert_dataset({
+                    "id": dataset_id,
+                    "name": job.name,
+                    "mode": "etl_csv_graph",
+                    "node_count": counts[0],
+                    "edge_count": counts[1],
+                    "issue_count": counts[2],
+                    "workbooks": [item["name"] for item in fingerprints],
+                    "uploaded_package": uploaded_package,
+                })
 
         job.dataset_id = dataset_id
         job.progress = 100

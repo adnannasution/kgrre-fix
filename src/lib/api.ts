@@ -65,6 +65,11 @@ export const api = {
     form.append('name', name)
     return request<ImportJob>('/etl/upload', { method: 'POST', body: form })
   },
+  etlSync: (datasetId: string, files: File[]) => {
+    const form = new FormData()
+    files.forEach(f => form.append('files', f, f.name))
+    return request<ImportJob>(`/datasets/${datasetId}/sync`, { method: 'POST', body: form })
+  },
   resetAll: () => request<{ ok: boolean }>('/reset', { method: 'POST' }),
   datasets: () => request<DatasetSummary[]>('/datasets'),
   dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),

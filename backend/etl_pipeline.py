@@ -1369,7 +1369,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         from .importer import _select_ready_files, _run_import
         scan = scan_package(out_dir, validate=True)
         files = _select_ready_files(scan, allow_partial=True)
-        _run_import(job, files, out_dir, True)
+        _run_import(job, files, out_dir, True, existing_dataset_id=job.dataset_id)
 
     except Exception as exc:
         job.status = "failed"
@@ -1378,10 +1378,11 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         job.finished_at = time.time()
 
 
-def start_etl_import(name: str, excel_paths: list[Path]) -> ImportJob:
+def start_etl_import(name: str, excel_paths: list[Path], existing_dataset_id: str | None = None) -> ImportJob:
     out_dir = UPLOADS_DIR / uuid.uuid4().hex
     out_dir.mkdir(parents=True, exist_ok=True)
     job = _create_job(name)
+    job.dataset_id = existing_dataset_id  # pre-set agar _run_import tahu ini sync
     with ETL_JOBS_LOCK:
         ETL_JOBS[job.id] = job
     threading.Thread(
