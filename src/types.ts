@@ -5,6 +5,15 @@ export interface SourceReference {
   record_id?: string | null
 }
 
+export interface DomainRecord {
+  source_record_id?: string | null
+  source_file?: string | null
+  source_sheet?: string | null
+  source_row?: number | null
+  equipment_id?: string | null
+  record?: Record<string, unknown> | null
+}
+
 export interface GraphNode {
   id: string
   kind: string
@@ -15,6 +24,7 @@ export interface GraphNode {
   equipment_code_normalized?: string
   properties: Record<string, unknown>
   source: SourceReference
+  domain_record?: DomainRecord | null
 }
 
 export type EquipmentRelated = GraphNode & {

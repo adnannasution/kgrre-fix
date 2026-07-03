@@ -2271,7 +2271,7 @@ function buildVpDiagnosticPrompt(insight: GraphInsight, diagnosisEvidence: Diagn
 }
 
 function EntityInspector({ node, edge, dataset, paths, onClose }: { node?: GraphNode; edge?: GraphEdge; dataset: DatasetSummary; paths?: NonNullable<GraphSlice['paths']>; onClose?: () => void }) {
-  const [detail, setDetail] = useState<(GraphNode & { domain_record?: Record<string, unknown> })>()
+  const [detail, setDetail] = useState<GraphNode>()
   const [edgeDetail, setEdgeDetail] = useState<GraphEdgeDetail>()
   const [tab, setTab] = useState<'details' | 'provenance' | 'properties' | 'raw' | 'paths'>('details')
   useEffect(() => { if (node) void api.node(dataset.id, node.id).then(setDetail) }, [node, dataset.id])
@@ -2318,7 +2318,20 @@ function EntityInspector({ node, edge, dataset, paths, onClose }: { node?: Graph
           <div><b>Record ID</b><span className="mono">{current.source.record_id || '—'}</span></div>
         </div>}
         {tab === 'paths' && <div className="inspector-paths">{(paths ?? []).filter((path) => path.node_id_path.includes(current.id)).slice(0, 8).map((path, index) => <div key={index}><b>{path.depth} hop</b><span>{path.label_path.map((label) => shortText(label, 22)).join(' → ')}</span></div>)}{!(paths ?? []).some((path) => path.node_id_path.includes(current.id)) && <p>Tidak ada deep path yang melibatkan node ini pada tampilan aktif.</p>}</div>}
-        {tab === 'raw' && <PropertyList values={current as unknown as Record<string, unknown>} />}
+        {tab === 'raw' && (
+          detail?.domain_record?.record
+            ? <div className="raw-source-data">
+                <div className="raw-source-header">
+                  <span className="eyebrow">Data Mentah</span>
+                  <small>{detail.domain_record.source_file || current.source.workbook}{detail.domain_record.source_sheet ? ` · ${detail.domain_record.source_sheet}` : ''}{detail.domain_record.source_row != null ? ` · baris ${detail.domain_record.source_row}` : ''}</small>
+                </div>
+                <PropertyList values={detail.domain_record.record} />
+              </div>
+            : <div className="raw-source-data">
+                <div className="raw-source-header"><span className="eyebrow">Data Mentah</span></div>
+                <p className="raw-source-empty">Data mentah tidak tersedia untuk node ini. Pastikan domain CSV sudah di-import.</p>
+              </div>
+        )}
       </> : null}
     </aside>
   )
