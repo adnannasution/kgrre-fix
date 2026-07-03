@@ -70,6 +70,8 @@ export const api = {
     files.forEach(f => form.append('files', f, f.name))
     return request<ImportJob>(`/datasets/${datasetId}/sync`, { method: 'POST', body: form })
   },
+  rebuildRelationships: (datasetId: string) =>
+    request<{ ok: boolean; relationships_created: number }>(`/datasets/${datasetId}/rebuild-relationships`, { method: 'POST' }),
   resetAll: () => request<{ ok: boolean }>('/reset', { method: 'POST' }),
   datasets: () => request<DatasetSummary[]>('/datasets'),
   dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),
