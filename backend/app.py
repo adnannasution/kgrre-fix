@@ -2959,29 +2959,57 @@ class DiagnosisGenerateRequest(BaseModel):
     role: str = "engineer"
 
 
+_DINOIKI_URL = "https://ai.dinoiki.com/v1/chat/completions"
+
+
 @app.post("/api/diagnosis/generate")
 def diagnosis_generate(req: DiagnosisGenerateRequest):
     import os
-    try:
-        import anthropic as _anthropic
-    except ImportError:
-        raise HTTPException(status_code=501, detail="Paket anthropic belum terpasang di server.")
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    import urllib.request
+    api_key = os.environ.get("DINOIKI_API_KEY", "")
     if not api_key:
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY belum dikonfigurasi di server.")
+        raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
 
-    client = _anthropic.Anthropic(api_key=api_key)
+    payload = json.dumps({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": req.prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "stream": True,
+    }).encode()
 
     def _stream():
-        with client.messages.stream(
-            model="claude-opus-4-8",
-            max_tokens=4096,
-            thinking={"type": "adaptive"},
-            messages=[{"role": "user", "content": req.prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                yield f"data: {json.dumps({'text': text})}\n\n"
+        http_req = urllib.request.Request(
+            _DINOIKI_URL,
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(http_req, timeout=120) as resp:
+                buf = b""
+                while True:
+                    chunk = resp.read(1024)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if not line.startswith(b"data:"):
+                            continue
+                        payload_str = line[5:].strip()
+                        if payload_str == b"[DONE]":
+                            return
+                        try:
+                            obj = json.loads(payload_str)
+                            text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                            if text:
+                                yield f"data: {json.dumps({'text': text})}\n\n"
+                        except Exception:
+                            pass
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
