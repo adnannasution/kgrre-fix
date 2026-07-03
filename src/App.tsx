@@ -326,6 +326,7 @@ export default function App() {
             activeId={activeId}
             onActivate={setActiveId}
             onRefresh={refreshDatasets}
+            onResetAll={() => { setActiveId(''); setPage('import') }}
           />
         )}
       </main>
@@ -2467,8 +2468,9 @@ function DataReview({ dataset }: { dataset?: DatasetSummary }) {
   )
 }
 
-function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { datasets: DatasetSummary[]; activeId: string; onActivate: (id: string) => void; onRefresh: () => Promise<void> }) {
+function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll }: { datasets: DatasetSummary[]; activeId: string; onActivate: (id: string) => void; onRefresh: () => Promise<void>; onResetAll: () => void }) {
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [resetting, setResetting] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
   const [fileLoading, setFileLoading] = useState<string | null>(null)
@@ -2506,6 +2508,28 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
     }
   }
 
+  const resetAll = async () => {
+    const totalNodes = datasets.reduce((s, d) => s + d.node_count, 0)
+    const totalEdges = datasets.reduce((s, d) => s + d.edge_count, 0)
+    if (!window.confirm(
+      `⚠️ RESET TOTAL — hapus SEMUA data?\n\n` +
+      `• ${datasets.length} dataset\n` +
+      `• ${format(totalNodes)} node\n` +
+      `• ${format(totalEdges)} relasi\n\n` +
+      `Ketik OK untuk konfirmasi. Tindakan ini tidak bisa dibatalkan.`
+    )) return
+    setResetting(true)
+    try {
+      await api.resetAll()
+      setFileRows({})
+      setExpanded(null)
+      await onRefresh()
+      onResetAll()
+    } finally {
+      setResetting(false)
+    }
+  }
+
   const fmtDate = (iso: string) => {
     try { return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) }
     catch { return iso }
@@ -2536,6 +2560,16 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
         <div className="hero-stat">
           <span className="hero-stat-num">{datasets.length}</span>
           <span className="eyebrow">dataset tersedia</span>
+          {datasets.length > 0 && (
+            <button
+              className="reset-all-btn"
+              onClick={() => void resetAll()}
+              disabled={resetting}
+              title="Hapus semua dataset, node, dan relasi — kembali ke kondisi kosong"
+            >
+              {resetting ? 'Mereset…' : '🗑 Reset semua'}
+            </button>
+          )}
         </div>
       </div>
 
