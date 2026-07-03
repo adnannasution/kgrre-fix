@@ -328,6 +328,26 @@ CREATE TABLE unmatched_raw (
 
 
 # ---------------------------------------------------------------------------
+# Helper: safe column reference (hindari "column not found" di DuckDB)
+# ---------------------------------------------------------------------------
+
+def _union_cols(con: duckdb.DuckDBPyConnection, views: list[str]) -> set[str]:
+    """Kumpulkan semua nama kolom yang ada di sekumpulan views."""
+    cols: set[str] = set()
+    for v in views:
+        cols |= {r[0].lower() for r in con.execute(f'DESCRIBE {v}').fetchall()}
+    return cols
+
+
+def _cs(cols: set[str], *names: str, cast: bool = False, default: str = "''") -> str:
+    """Build COALESCE hanya dari kolom yang benar-benar ada. Kolom tidak ada → default."""
+    found = [f'cast("{n}" AS VARCHAR)' if cast else f'"{n}"' for n in names if n in cols]
+    if not found:
+        return default
+    return f"coalesce({', '.join(found + [default])})"
+
+
+# ---------------------------------------------------------------------------
 # Node builders
 # ---------------------------------------------------------------------------
 
@@ -344,32 +364,36 @@ def _build_ru_plant_nodes(con: duckdb.DuckDBPyConnection) -> None:
 def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    eq_raw = _cs(c, 'equipment', 'tag_number', 'tag_no', default='NULL')
+    plant_expr = f"norm_text({_cs(c, 'maintplant','planning_plant','maint_plant','plant', default='NULL')})"
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','refineryunit', default='NULL')})"
     con.execute(f"""
         CREATE TABLE equipment_master AS
         WITH base AS (
             SELECT
-                norm_equipment(coalesce(equipment, tag_number, tag_no)) AS equipment_code_normalized,
-                coalesce(equipment, tag_number, tag_no) AS equipment_code_raw,
-                norm_text(coalesce(maintplant, planning_plant)) AS plant,
+                norm_equipment({eq_raw}) AS equipment_code_normalized,
+                {eq_raw} AS equipment_code_raw,
+                {plant_expr} AS plant,
                 coalesce(
-                    ru_normalize(coalesce(refinery_unit, ru)),
+                    {ru_expr},
                     (SELECT refinery_unit FROM plant_ru_map
-                     WHERE plant = norm_text(coalesce(maintplant, planning_plant)) LIMIT 1),
+                     WHERE plant = {plant_expr} LIMIT 1),
                     ru_from_filename(_input_source_file)
                 ) AS refinery_unit,
-                nullif(trim(coalesce(functional_loc, functional_location, '')), '') AS functional_location,
-                nullif(trim(coalesce(catalog_profile, equipment_group, '')), '') AS equipment_group,
-                nullif(trim(coalesce(description_of_technical_object, description, '')), '') AS description,
-                nullif(trim(coalesce(criticallity, criticality, '')), '') AS criticallity,
-                nullif(trim(coalesce(location, plant_area, '')), '') AS plant_area,
-                nullif(trim(coalesce(date_update_data, '')), '') AS date_update_data,
+                nullif(trim({_cs(c, 'functional_loc','functional_location','floc')}), '') AS functional_location,
+                nullif(trim({_cs(c, 'catalog_profile','equipment_group','object_type')}), '') AS equipment_group,
+                nullif(trim({_cs(c, 'description_of_technical_object','description','equipment_name')}), '') AS description,
+                nullif(trim({_cs(c, 'criticallity','criticality','critical_rank')}), '') AS criticallity,
+                nullif(trim({_cs(c, 'location','plant_area','plant_section')}), '') AS plant_area,
+                nullif(trim({_cs(c, 'date_update_data','last_update','update_date')}), '') AS date_update_data,
                 _input_source_file AS source_file,
                 _input_source_sheet AS source_sheet,
                 _source_row AS source_row,
                 'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
             FROM ({union_sql})
-            WHERE norm_equipment(coalesce(equipment, tag_number, tag_no)) IS NOT NULL
+            WHERE norm_equipment({eq_raw}) IS NOT NULL
         ),
         ranked AS (
             SELECT *, row_number() OVER (
@@ -425,40 +449,33 @@ def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
 def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ord_expr = _cs(c, 'order','order_no','order_number','aufnr','maint_order', cast=True, default='NULL')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant','refineryunit', default='NULL')})"
     con.execute(f"""
         CREATE TABLE maintenance_stage AS
         SELECT
-            coalesce(cast("order" AS VARCHAR), cast(order_no AS VARCHAR),
-                     cast(aufnr AS VARCHAR)) AS order_raw,
-            coalesce(cast(notification AS VARCHAR), cast(notif AS VARCHAR),
-                     cast(qmnum AS VARCHAR)) AS notification_raw,
-            norm_code(coalesce(cast("order" AS VARCHAR), cast(order_no AS VARCHAR),
-                               cast(aufnr AS VARCHAR))) AS order_code,
-            coalesce(description, kurztext, short_text, '') AS order_desc,
-            coalesce(order_type, auart, '') AS order_type,
-            coalesce(priority, priok, '') AS priority,
-            coalesce(user_status, txt04, '') AS user_status,
-            coalesce(system_status, sttxt, '') AS system_status,
-            coalesce(cast(reference_date AS VARCHAR),
-                     cast(gstrp AS VARCHAR), '') AS reference_date,
-            coalesce(cast(total_planned_costs AS VARCHAR),
-                     cast(geplk AS VARCHAR), '0') AS planned_cost,
-            coalesce(cast(total_actual_costs AS VARCHAR),
-                     cast(istko AS VARCHAR), '0') AS actual_cost,
-            coalesce(main_work_center, arbpl, '') AS work_center,
-            coalesce(equipment, tag_number, tag_no, equnr, '') AS equipment_raw,
-            coalesce(
-                ru_normalize(coalesce(refinery_unit, ru, plant, maintplant)),
-                ru_from_filename(_input_source_file)
-            ) AS refinery_unit,
+            {ord_expr} AS order_raw,
+            {_cs(c, 'notification','notif','qmnum', cast=True)} AS notification_raw,
+            norm_code({ord_expr}) AS order_code,
+            {_cs(c, 'description','kurztext','short_text','order_description')} AS order_desc,
+            {_cs(c, 'order_type','auart','order_category')} AS order_type,
+            {_cs(c, 'priority','priok')} AS priority,
+            {_cs(c, 'user_status','txt04','ustatus')} AS user_status,
+            {_cs(c, 'system_status','sttxt')} AS system_status,
+            {_cs(c, 'reference_date','gstrp','basic_start', cast=True)} AS reference_date,
+            {_cs(c, 'total_planned_costs','geplk','planned_cost', cast=True, default="'0'")} AS planned_cost,
+            {_cs(c, 'total_actual_costs','istko','actual_cost', cast=True, default="'0'")} AS actual_cost,
+            {_cs(c, 'main_work_center','main_workcenter','arbpl','work_center','workcenter')} AS work_center,
+            {_cs(c, 'equipment','tag_number','tag_no','equnr')} AS equipment_raw,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
             _input_source_sheet AS source_sheet,
             _source_row AS source_row,
             'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
         FROM ({union_sql})
-        WHERE coalesce(cast("order" AS VARCHAR), cast(order_no AS VARCHAR),
-                       cast(aufnr AS VARCHAR)) IS NOT NULL
+        WHERE {ord_expr} IS NOT NULL
     """)
 
     # Tambah derived columns
@@ -530,39 +547,33 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
 def _build_rkap_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refineryunit','refinery_unit','ru','plant', default='NULL')})"
     con.execute(f"""
         CREATE TABLE rkap_stage AS
         SELECT
-            coalesce(noprogram, no_program, program_no, '') AS program_no,
-            coalesce(programkerja, program_kerja, nama_program, program_name, '') AS program_name,
-            coalesce(equipment, tag_number, tag_no, '') AS equipment_raw,
-            coalesce(cast(plant AS VARCHAR), cast(refineryunit AS VARCHAR),
-                     cast(refinery_unit AS VARCHAR), cast(ru AS VARCHAR), '') AS ru_raw,
-            coalesce(katergorirkap, kategori_rkap, kategori, '') AS kategori,
-            coalesce(kelompokbiaya, kelompok_biaya, '') AS kelompok_biaya,
-            coalesce(disiplin, discipline, '') AS disiplin,
-            coalesce(cast(fiscalyear AS VARCHAR), cast(fiscal_year AS VARCHAR),
-                     cast(tahun AS VARCHAR), '') AS fiscal_year,
-            coalesce(cast(planstart AS VARCHAR), cast(plan_start AS VARCHAR), '') AS plan_start,
-            coalesce(cast(planfinish AS VARCHAR), cast(plan_finish AS VARCHAR), '') AS plan_finish,
-            coalesce(cast(actualstart AS VARCHAR), cast(actual_start AS VARCHAR), '') AS actual_start,
-            coalesce(cast(actualfinish AS VARCHAR), cast(actual_finish AS VARCHAR), '') AS actual_finish,
-            coalesce(statusactual, status_actual, status, '') AS status_actual,
-            coalesce(cast(totalequivalentidr AS VARCHAR),
-                     cast(total_equivalent_idr AS VARCHAR), '0') AS total_idr,
-            coalesce(cast(toprisk AS VARCHAR), '') AS top_risk,
-            coalesce(
-                ru_normalize(coalesce(refineryunit, refinery_unit, ru, plant)),
-                ru_from_filename(_input_source_file)
-            ) AS refinery_unit,
+            {_cs(c, 'noprogram','no_program','program_no','programkerja','program_kerja','nama_program','program_name')} AS program_no,
+            {_cs(c, 'programkerja','program_kerja','nama_program','program_name','noprogram','no_program')} AS program_name,
+            {_cs(c, 'equipment','tag_number','tag_no')} AS equipment_raw,
+            {_cs(c, 'katergorirkap','kategori_rkap','kategori')} AS kategori,
+            {_cs(c, 'kelompokbiaya','kelompok_biaya')} AS kelompok_biaya,
+            {_cs(c, 'disiplin','discipline')} AS disiplin,
+            {_cs(c, 'fiscalyear','fiscal_year','tahun', cast=True)} AS fiscal_year,
+            {_cs(c, 'planstart','plan_start', cast=True)} AS plan_start,
+            {_cs(c, 'planfinish','plan_finish', cast=True)} AS plan_finish,
+            {_cs(c, 'actualstart','actual_start', cast=True)} AS actual_start,
+            {_cs(c, 'actualfinish','actual_finish', cast=True)} AS actual_finish,
+            {_cs(c, 'statusactual','status_actual','status')} AS status_actual,
+            {_cs(c, 'totalequivalentidr','total_equivalent_idr', cast=True, default="'0'")} AS total_idr,
+            {_cs(c, 'toprisk','top_risk', cast=True)} AS top_risk,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
             _input_source_sheet AS source_sheet,
             _source_row AS source_row,
             'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
         FROM ({union_sql})
-        WHERE nullif(trim(coalesce(noprogram, no_program, program_no, programkerja,
-                                   program_kerja, '')), '') IS NOT NULL
+        WHERE nullif(trim({_cs(c, 'noprogram','no_program','program_no','programkerja','program_kerja','nama_program','program_name')}), '') IS NOT NULL
     """)
 
     con.execute("""
@@ -655,28 +666,28 @@ def _build_rkap_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
 def _build_reliability_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    eq_expr = _cs(c, 'equipment','tag_number','tag_no')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','refineryunit', default='NULL')})"
     con.execute(f"""
         CREATE TABLE reliability_stage AS
         SELECT
-            coalesce(equipment, tag_number, tag_no, '') AS equipment_raw,
-            coalesce(cast(hasil AS VARCHAR), cast(status AS VARCHAR), '') AS hasil,
-            coalesce(cast(running_hours AS VARCHAR), '0') AS running_hours,
-            coalesce(cast(mtbf AS VARCHAR), '0') AS mtbf,
-            coalesce(cast(mttr AS VARCHAR), '0') AS mttr,
-            coalesce(cast(minggu AS VARCHAR), '') AS minggu,
-            coalesce(cast(bulan AS VARCHAR), cast(month_update AS VARCHAR), '') AS bulan,
-            coalesce(cast(tahun AS VARCHAR), '') AS tahun,
-            coalesce(
-                ru_normalize(coalesce(refinery_unit, ru, plant)),
-                ru_from_filename(_input_source_file)
-            ) AS refinery_unit,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'hasil','status','result')} AS hasil,
+            {_cs(c, 'running_hours','run_hours','operating_hours','jam_operasi', cast=True, default="'0'")} AS running_hours,
+            {_cs(c, 'mtbf', cast=True, default="'0'")} AS mtbf,
+            {_cs(c, 'mttr', cast=True, default="'0'")} AS mttr,
+            {_cs(c, 'minggu','week', cast=True)} AS minggu,
+            {_cs(c, 'bulan','month_update','month','period', cast=True)} AS bulan,
+            {_cs(c, 'tahun','year','fiscal_year', cast=True)} AS tahun,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
             _input_source_sheet AS source_sheet,
             _source_row AS source_row,
             'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
         FROM ({union_sql})
-        WHERE nullif(trim(coalesce(equipment, tag_number, tag_no, '')), '') IS NOT NULL
+        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
     """)
 
     con.execute("""
@@ -726,26 +737,26 @@ def _build_reliability_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
 def _build_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    eq_expr = _cs(c, 'tag_no_ln','tag_number','tag_no','equipment')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant', default='NULL')})"
     con.execute(f"""
         CREATE TABLE inspection_stage AS
         SELECT
-            coalesce(tag_no_ln, tag_number, tag_no, equipment, '') AS equipment_raw,
-            coalesce(type_inspection, jenis_inspeksi, '') AS type_inspection,
-            coalesce(type_pekerjaan, jenis_pekerjaan, '') AS type_pekerjaan,
-            coalesce(cast(plan_date AS VARCHAR), cast(tanggal_rencana AS VARCHAR), '') AS plan_date,
-            coalesce(cast(actual_date AS VARCHAR), cast(tanggal_aktual AS VARCHAR), '') AS actual_date,
-            coalesce(grand_result, hasil, '') AS grand_result,
-            coalesce(
-                ru_normalize(coalesce(refinery_unit, ru, plant)),
-                ru_from_filename(_input_source_file)
-            ) AS refinery_unit,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'type_inspection','jenis_inspeksi','inspection_type')} AS type_inspection,
+            {_cs(c, 'type_pekerjaan','jenis_pekerjaan','work_type')} AS type_pekerjaan,
+            {_cs(c, 'plan_date','tanggal_rencana','inspection_date','next_inspection', cast=True)} AS plan_date,
+            {_cs(c, 'actual_date','tanggal_aktual','last_inspection', cast=True)} AS actual_date,
+            {_cs(c, 'grand_result','hasil','result','inspection_result')} AS grand_result,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
             _input_source_sheet AS source_sheet,
             _source_row AS source_row,
             'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
         FROM ({union_sql})
-        WHERE nullif(trim(coalesce(tag_no_ln, tag_number, tag_no, equipment, '')), '') IS NOT NULL
+        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
     """)
 
     con.execute("""
@@ -792,19 +803,22 @@ def _build_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
 def _build_icu_issue_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    issue_expr = _cs(c, 'issue', 'deskripsi_issue', 'description')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang','plant', default='NULL')})"
     con.execute(f"""
         CREATE TABLE icu_stage AS
         SELECT
-            coalesce(tag_no, tag_number, equipment, '') AS equipment_raw,
-            coalesce(issue, deskripsi_issue, '') AS issue_text,
-            coalesce(icu_status, status, '') AS icu_status,
-            coalesce(cast(report_date AS VARCHAR), cast(tanggal AS VARCHAR), '') AS report_date,
-            coalesce(cast(target_closed AS VARCHAR), '') AS target_closed,
-            coalesce(mitigation_temporary_solution, solusi_sementara, '') AS mitigation,
-            coalesce(permanent_solution, solusi_permanen, '') AS permanent_solution,
+            {_cs(c, 'tag_no','tag_number','equipment')} AS equipment_raw,
+            {issue_expr} AS issue_text,
+            {_cs(c, 'icu_status','status')} AS icu_status,
+            {_cs(c, 'report_date','tanggal', cast=True)} AS report_date,
+            {_cs(c, 'target_closed', cast=True)} AS target_closed,
+            {_cs(c, 'mitigation_temporary_solution','mitigation','solusi_sementara')} AS mitigation,
+            {_cs(c, 'permanent_solution','solusi_permanen')} AS permanent_solution,
             coalesce(
-                ru_normalize(coalesce(refinery_unit, ru, kilang, plant)),
+                {ru_expr},
                 ru_from_filename(_input_source_file)
             ) AS refinery_unit,
             _input_source_file AS source_file,
@@ -812,7 +826,7 @@ def _build_icu_issue_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
             _source_row AS source_row,
             'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
         FROM ({union_sql})
-        WHERE nullif(trim(coalesce(issue, deskripsi_issue, '')), '') IS NOT NULL
+        WHERE nullif(trim({issue_expr}), '') IS NOT NULL
     """)
 
     con.execute("""
@@ -874,19 +888,20 @@ def _build_icu_issue_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
 def _build_readiness_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
+    c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang','plant', default='NULL')})"
     con.execute(f"""
         CREATE TABLE readiness_stage AS
         SELECT
-            coalesce(equipment, tag_number, tag_no, process_equipment,
-                     nama_tangki, no_tangki, '') AS equipment_raw,
-            coalesce(cast(period_date AS VARCHAR), cast(month_update AS VARCHAR), '') AS period_date,
-            coalesce(status_operation, status_operasi, '') AS status_operation,
-            coalesce(status_item, '') AS status_item,
-            coalesce(remark, keterangan, '') AS remark,
-            coalesce(rtl, '') AS rtl,
+            {_cs(c, 'equipment','tag_number','tag_no','process_equipment','nama_tangki','no_tangki')} AS equipment_raw,
+            {_cs(c, 'period_date','month_update', cast=True)} AS period_date,
+            {_cs(c, 'status_operation','status_operasi')} AS status_operation,
+            {_cs(c, 'status_item')} AS status_item,
+            {_cs(c, 'remark','keterangan')} AS remark,
+            {_cs(c, 'rtl')} AS rtl,
             coalesce(
-                ru_normalize(coalesce(refinery_unit, ru, kilang, plant)),
+                {ru_expr},
                 ru_from_filename(_input_source_file)
             ) AS refinery_unit,
             _input_source_file AS source_file,
@@ -1275,45 +1290,53 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
                 if domain and domain in domain_views:
                     domain_views[domain].append(tname)
 
+        build_warnings: list[str] = []
+
+        def _safe(phase: str, fn, *args):
+            try:
+                fn(*args)
+            except Exception as exc:
+                build_warnings.append(f"{phase}: {exc}")
+
         job.progress = 20
         job.phase = "Membangun node RU & Plant"
         _build_ru_plant_nodes(con)
 
         job.progress = 25
         job.phase = "Membangun node Equipment"
-        _build_equipment_nodes(con, domain_views["equipment"])
+        _safe("Equipment", _build_equipment_nodes, con, domain_views["equipment"])
 
         job.progress = 35
         job.phase = "Membangun node Maintenance Order"
-        _build_maintenance_nodes(con, domain_views["maintenance"])
+        _safe("Maintenance", _build_maintenance_nodes, con, domain_views["maintenance"])
 
         job.progress = 45
         job.phase = "Membangun node RKAP Program"
-        _build_rkap_nodes(con, domain_views["rkap"])
+        _safe("RKAP", _build_rkap_nodes, con, domain_views["rkap"])
 
         job.progress = 55
         job.phase = "Membangun node Reliability"
-        _build_reliability_nodes(con, domain_views["reliability"])
+        _safe("Reliability", _build_reliability_nodes, con, domain_views["reliability"])
 
         job.progress = 62
         job.phase = "Membangun node Inspection"
-        _build_inspection_nodes(con, domain_views["inspection"])
+        _safe("Inspection", _build_inspection_nodes, con, domain_views["inspection"])
 
         job.progress = 68
         job.phase = "Membangun node ICU Issue"
-        _build_icu_issue_nodes(con, domain_views["icu_issue"])
+        _safe("ICU Issue", _build_icu_issue_nodes, con, domain_views["icu_issue"])
 
         job.progress = 74
         job.phase = "Membangun node Readiness"
-        _build_readiness_nodes(con, domain_views["readiness"])
+        _safe("Readiness", _build_readiness_nodes, con, domain_views["readiness"])
 
         job.progress = 76
         job.phase = "Membangun node OA Data"
-        _build_oa_nodes(con, domain_views["oa_allowance"], domain_views["oa_availability"], domain_views["oa_issue"])
+        _safe("OA Data", _build_oa_nodes, con, domain_views["oa_allowance"], domain_views["oa_availability"], domain_views["oa_issue"])
 
         job.progress = 79
         job.phase = "Membangun node PLO"
-        _build_plo_nodes(con, domain_views["plo"])
+        _safe("PLO", _build_plo_nodes, con, domain_views["plo"])
 
         job.progress = 82
         job.phase = "Menulis output CSV"
@@ -1322,9 +1345,10 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
 
         job.progress = 88
         job.phase = "Import ke database"
+        warn_str = (" | Peringatan: " + "; ".join(build_warnings)) if build_warnings else ""
         job.message = (
             f"ETL selesai: {counts['nodes']:,} node, {counts['relationships']:,} relasi, "
-            f"{counts['candidates']:,} kandidat, {counts['unmatched']:,} tidak cocok"
+            f"{counts['candidates']:,} kandidat, {counts['unmatched']:,} tidak cocok{warn_str}"
         )
 
         # Trigger existing import pipeline
