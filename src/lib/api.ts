@@ -7,6 +7,7 @@ import type {
   GraphNode,
   GraphSlice,
   ImportJob,
+  LoadSummaryRow,
   NodeDegree,
   QueryMetadata,
   ReadinessContext,
@@ -66,6 +67,7 @@ export const api = {
   },
   datasets: () => request<DatasetSummary[]>('/datasets'),
   dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),
+  loadSummary: (id: string) => request<LoadSummaryRow[]>(`/datasets/${id}/load-summary`),
   renameDataset: (id: string, name: string) =>
     request<DatasetSummary>(`/datasets/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   deleteDataset: (id: string) => request(`/datasets/${id}`, { method: 'DELETE' }),

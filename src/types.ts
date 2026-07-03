@@ -86,6 +86,16 @@ export interface DatasetSummary {
   workbooks: string[]
 }
 
+export interface LoadSummaryRow {
+  workbook: string
+  sheet_name: string
+  row_count: number
+  node_count: number
+  edge_count: number
+  issue_count: number
+  status: string
+}
+
 export interface ImportJob {
   id: string
   name: string

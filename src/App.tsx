@@ -25,6 +25,7 @@ import type {
   GraphNode,
   GraphSlice,
   ImportJob,
+  LoadSummaryRow,
   QueryMetadata,
   ReadinessContext,
   ReliabilityInsight,
@@ -2469,6 +2470,21 @@ function DataReview({ dataset }: { dataset?: DatasetSummary }) {
 function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { datasets: DatasetSummary[]; activeId: string; onActivate: (id: string) => void; onRefresh: () => Promise<void> }) {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
+  const [fileLoading, setFileLoading] = useState<string | null>(null)
+
+  const toggle = async (id: string) => {
+    if (expanded === id) { setExpanded(null); return }
+    setExpanded(id)
+    if (fileRows[id]) return
+    setFileLoading(id)
+    try {
+      const rows = await api.loadSummary(id)
+      setFileRows(prev => ({ ...prev, [id]: rows }))
+    } finally {
+      setFileLoading(null)
+    }
+  }
 
   const rename = async (dataset: DatasetSummary) => {
     const name = window.prompt('Nama dataset baru', dataset.name)
@@ -2483,6 +2499,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
     setDeleting(dataset.id)
     try {
       await api.deleteDataset(dataset.id)
+      setFileRows(prev => { const n = { ...prev }; delete n[dataset.id]; return n })
       await onRefresh()
     } finally {
       setDeleting(null)
@@ -2498,6 +2515,14 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
     graph_contract: 'ETL contract',
     exact_match_fallback: 'Exact match',
     etl_csv_graph: 'ETL CSV',
+  }
+
+  const statusIcon = (s: string) => {
+    if (!s) return '—'
+    if (s === 'ok' || s === 'success') return '✅'
+    if (s === 'partial') return '⚠️'
+    if (s === 'error' || s === 'failed') return '❌'
+    return s
   }
 
   return (
@@ -2535,7 +2560,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
                 <>
                   <tr key={dataset.id} className={`dm-row ${dataset.id === activeId ? 'dm-active' : ''}`}>
                     <td>
-                      <button className="dm-name-btn" onClick={() => setExpanded(expanded === dataset.id ? null : dataset.id)}>
+                      <button className="dm-name-btn" onClick={() => void toggle(dataset.id)}>
                         <span className="dm-chevron">{expanded === dataset.id ? '▾' : '▸'}</span>
                         <span>{dataset.name}</span>
                         {dataset.id === activeId && <span className="dm-badge">Aktif</span>}
@@ -2567,19 +2592,58 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
                     <tr key={`${dataset.id}-files`} className="dm-files-row">
                       <td colSpan={7}>
                         <div className="dm-files">
-                          <span className="eyebrow">File yang diimpor ({dataset.workbooks.length})</span>
-                          {dataset.workbooks.length === 0
-                            ? <span className="dm-no-files">Tidak ada info file tercatat.</span>
-                            : (
-                              <ul className="dm-file-list">
-                                {dataset.workbooks.map((wb, i) => (
-                                  <li key={i} className="dm-file-item">
-                                    <span className="dm-file-icon">📄</span>
-                                    <span className="dm-file-name">{wb}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
+                          {fileLoading === dataset.id
+                            ? <span className="dm-no-files">Memuat daftar file…</span>
+                            : (() => {
+                                const rows = fileRows[dataset.id] ?? []
+                                if (!rows.length) return <span className="dm-no-files">Tidak ada data file tercatat.</span>
+                                // group by workbook
+                                const byFile = rows.reduce<Record<string, LoadSummaryRow[]>>((acc, r) => {
+                                  const k = r.workbook || '(tanpa nama)'
+                                  ;(acc[k] ??= []).push(r)
+                                  return acc
+                                }, {})
+                                return (
+                                  <div className="dm-file-groups">
+                                    {Object.entries(byFile).map(([wb, sheets]) => (
+                                      <div key={wb} className="dm-file-group">
+                                        <div className="dm-file-group-header">
+                                          <span className="dm-file-icon">📄</span>
+                                          <span className="dm-file-group-name">{wb}</span>
+                                          <span className="dm-file-group-meta">
+                                            {sheets.length} sheet · {format(sheets.reduce((s, r) => s + (r.node_count || 0), 0))} node
+                                          </span>
+                                        </div>
+                                        <table className="dm-sheet-table">
+                                          <thead>
+                                            <tr>
+                                              <th>Sheet</th>
+                                              <th className="num">Baris</th>
+                                              <th className="num">Node</th>
+                                              <th className="num">Relasi</th>
+                                              <th className="num">Issue</th>
+                                              <th>Status</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {sheets.map((r, i) => (
+                                              <tr key={i}>
+                                                <td>{r.sheet_name || '—'}</td>
+                                                <td className="num">{format(r.row_count)}</td>
+                                                <td className="num">{format(r.node_count)}</td>
+                                                <td className="num">{format(r.edge_count)}</td>
+                                                <td className="num">{r.issue_count > 0 ? <span className="dm-issue-count">{format(r.issue_count)}</span> : format(r.issue_count)}</td>
+                                                <td><span className="dm-status">{statusIcon(r.status)}</span></td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )
+                              })()
+                          }
                         </div>
                       </td>
                     </tr>
