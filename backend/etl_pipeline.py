@@ -36,14 +36,14 @@ def _detect_domain(filename: str, sheet: str) -> str | None:
     sheet_l = sheet.lower()
     k = _key(filename, sheet)
 
-    if "all_ru_equipment" in stem and "sheet4" in sheet_l:
+    if "all_ru_equipment" in stem:
         return "equipment"
     if stem.startswith(("pt02_", "pt03_")):
         return "maintenance"
     if any(x in k for x in ("vw_reportirkapplanactual", "reportirkapplanactual", "cost_program")) \
             or (any(x in k for x in ("rkap", "irkap")) and "alias_map" not in stem):
         return "rkap"
-    if stem.startswith("running_hours_") or (stem.startswith("n_0_") and sheet_l == "sheet1"):
+    if stem.startswith("running_hours_") or stem.startswith("n_0_"):
         return "reliability"
     if "inspection_plan" in k:
         return "inspection"
@@ -53,17 +53,20 @@ def _detect_domain(filename: str, sheet: str) -> str | None:
         return "org_issue"
     if any(x in k for x in ("icu_database", "icu")):
         return "icu_issue"
-    if "rcps" in stem and sheet_l == "rcps":
+    if "rcps" in stem:
+        if any(x in sheet_l for x in ("rekomendasi", "recommendation")):
+            return "rcps_recommendation"
         return "rcps"
-    if "rcps" in stem and sheet_l == "rekomendasi":
-        return "rcps_recommendation"
-    # OA_Data: Operational Availability & Allowance Unplanned & Issue List
-    if "oa_data" in stem and "allowance" in sheet_l:
-        return "oa_allowance"
-    if "oa_data" in stem and "operational" in sheet_l:
+    # OA_Data: deteksi dari nama sheet, fallback ke sheet pertama jika tidak dikenali
+    if "oa_data" in stem:
+        if "allowance" in sheet_l or "unplanned" in sheet_l:
+            return "oa_allowance"
+        if "operational" in sheet_l or "availability" in sheet_l or "oa" in sheet_l:
+            return "oa_availability"
+        if "issue" in sheet_l:
+            return "oa_issue"
+        # fallback: sheet pertama → availability
         return "oa_availability"
-    if "oa_data" in stem and "issue" in sheet_l:
-        return "oa_issue"
     # PLO: Perizinan Layak Operasi
     if stem.startswith("plo") or "plo_" in stem:
         return "plo"
