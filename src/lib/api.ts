@@ -65,6 +65,7 @@ export const api = {
     form.append('name', name)
     return request<ImportJob>('/etl/upload', { method: 'POST', body: form })
   },
+  resetAll: () => request<{ ok: boolean }>('/reset', { method: 'POST' }),
   datasets: () => request<DatasetSummary[]>('/datasets'),
   dataset: (id: string) => request<DatasetSummary>(`/datasets/${id}`),
   loadSummary: (id: string) => request<LoadSummaryRow[]>(`/datasets/${id}/load-summary`),

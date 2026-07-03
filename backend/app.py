@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from .config import (
     UPLOADS_DIR, delete_dataset as _delete_dataset_data, ensure_dirs, ensure_schema,
     get_config, get_dataset_row, list_datasets, rename_dataset as _rename_dataset,
-    save_config,
+    reset_all as _reset_all, save_config,
 )
 from .database import fetch_tuple, pool
 from .etl_pipeline import start_etl_import
@@ -354,6 +354,13 @@ def delete_dataset(dataset_id: str):
     _delete_dataset_data(dataset_id)
     _invalidate_insight_cache(dataset_id)
     return {"ok": True}
+
+
+@app.post("/api/reset")
+def reset_all():
+    """Hapus semua dataset, node, dan relasi — kembali ke kondisi awal kosong."""
+    _INSIGHT_CACHE.clear()
+    return _reset_all()
 
 
 @app.get("/api/datasets/{dataset_id}/load-summary")

@@ -128,3 +128,12 @@ def delete_dataset(dataset_id: str) -> None:
         for table in _DATA_TABLES:
             conn.execute(f"DELETE FROM {table} WHERE dataset_id = %s", [dataset_id])
         conn.execute("DELETE FROM dataset_catalog WHERE id = %s", [dataset_id])
+
+
+def reset_all() -> dict:
+    """Hapus semua dataset dan seluruh data — kembali ke kondisi kosong."""
+    with connection() as conn:
+        for table in _DATA_TABLES:
+            conn.execute(f"TRUNCATE {table}")
+        conn.execute("TRUNCATE dataset_catalog")
+    return {"ok": True}
