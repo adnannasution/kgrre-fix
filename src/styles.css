@@ -395,6 +395,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .dm-file-icon { font-size: 13px; flex-shrink: 0; }
 .dm-file-name { color: var(--fg); word-break: break-all; }
 .dm-no-files { color: var(--muted); font-size: var(--fs-xs); }
+.dm-file-groups { display: flex; flex-direction: column; gap: 14px; }
+.dm-file-group { border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.dm-file-group-header { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--panel); border-bottom: 1px solid var(--line-soft); }
+.dm-file-group-name { font-size: var(--fs-xs); font-weight: 700; flex: 1; min-width: 0; word-break: break-all; }
+.dm-file-group-meta { font-size: 8px; color: var(--muted); white-space: nowrap; }
+.dm-sheet-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.dm-sheet-table th { background: var(--panel-2); padding: 7px 12px; text-align: left; font-size: 8px; font-weight: 900; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); border-bottom: 1px solid var(--line-soft); }
+.dm-sheet-table th.num { text-align: right; }
+.dm-sheet-table td { padding: 7px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.dm-sheet-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dm-sheet-table tr:last-child td { border-bottom: 0; }
+.dm-issue-count { color: var(--amber); font-weight: 700; }
+.dm-status { font-size: 12px; }
 .hero-stat { text-align: right; }
 .hero-stat-num { display: block; font-family: var(--display); font-size: 48px; font-weight: 900; color: var(--blue); line-height: 1; }
 

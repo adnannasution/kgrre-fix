@@ -356,6 +356,17 @@ def delete_dataset(dataset_id: str):
     return {"ok": True}
 
 
+@app.get("/api/datasets/{dataset_id}/load-summary")
+def load_summary_endpoint(dataset_id: str):
+    get_dataset(dataset_id)
+    with db_for(dataset_id) as connection:
+        return rows(
+            connection,
+            "SELECT workbook, sheet_name, row_count, node_count, edge_count, issue_count, status "
+            "FROM load_summary ORDER BY workbook, sheet_name",
+        )
+
+
 @app.get("/api/datasets/{dataset_id}/stats")
 def stats(dataset_id: str):
     with_db(dataset_id)
