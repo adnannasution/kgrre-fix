@@ -2478,6 +2478,8 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
   const [syncing, setSyncing] = useState(false)
   const [syncJob, setSyncJob] = useState<ImportJob | null>(null)
   const syncInputRef = useRef<HTMLInputElement>(null)
+  const [rebuilding, setRebuilding] = useState<string | null>(null)
+  const [rebuildResult, setRebuildResult] = useState<{ id: string; count: number } | null>(null)
 
   const toggle = async (id: string) => {
     if (expanded === id) { setExpanded(null); return }
@@ -2531,6 +2533,20 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
       onResetAll()
     } finally {
       setResetting(false)
+    }
+  }
+
+  const rebuildRelationships = async (dataset: DatasetSummary) => {
+    setRebuilding(dataset.id)
+    setRebuildResult(null)
+    try {
+      const res = await api.rebuildRelationships(dataset.id)
+      setRebuildResult({ id: dataset.id, count: res.relationships_created })
+      await onRefresh()
+    } catch (err) {
+      alert('Gagal rebuild relasi: ' + String(err))
+    } finally {
+      setRebuilding(null)
     }
   }
 
@@ -2645,11 +2661,11 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                         <button className="secondary small" onClick={() => void rename(dataset)}>Rename</button>
                         <button
                           className="secondary small"
-                          onClick={() => startSync(dataset)}
-                          disabled={syncing}
-                          title="Sinkronisasi ulang knowledge graph dari file Excel baru"
+                          onClick={() => void rebuildRelationships(dataset)}
+                          disabled={rebuilding === dataset.id}
+                          title="Rebuild relasi antar node dari data yang sudah ada di database"
                         >
-                          {syncing && syncTarget?.id === dataset.id ? '⏳' : '🔄 Sinkron'}
+                          {rebuilding === dataset.id ? '⏳ Membangun…' : '🔗 Rebuild Relasi'}
                         </button>
                         <button
                           className="icon-button danger"
@@ -2701,6 +2717,16 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
         style={{ display: 'none' }}
         onChange={e => void handleSyncFiles(e)}
       />
+
+      {/* Hasil rebuild relasi */}
+      {rebuildResult && (
+        <div className="sync-status-panel">
+          <div className="sync-status-header">
+            <span>✅ Rebuild selesai — <strong>{rebuildResult.count.toLocaleString('id-ID')} relasi</strong> berhasil dibuat</span>
+            <button className="secondary small" onClick={() => setRebuildResult(null)}>✕</button>
+          </div>
+        </div>
+      )}
 
       {/* Status sinkronisasi */}
       {syncTarget && syncJob && (

@@ -342,6 +342,120 @@ async def etl_sync(
         raise HTTPException(400, str(exc)) from exc
 
 
+_NORM = "regexp_replace(upper(coalesce(%s, '')), '[^A-Z0-9]+', '', 'g')"
+
+
+def _norm(expr: str) -> str:
+    return _NORM % expr
+
+
+@app.post("/api/datasets/{dataset_id}/rebuild-relationships")
+def rebuild_relationships(dataset_id: str):
+    """Rebuild semua relasi dari data node yang sudah ada — tanpa re-upload file."""
+    row = get_dataset_row(dataset_id)
+    if not row:
+        raise HTTPException(404, "Dataset tidak ditemukan.")
+
+    connection = db_for(dataset_id)
+    try:
+        # Hapus relasi lama
+        connection.execute("DELETE FROM kg_relationship")
+
+        rel_sql = """
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT DO NOTHING
+        """
+
+        def make_id(src: str, rel: str, tgt: str) -> str:
+            import hashlib
+            return "rel_" + hashlib.md5(f"{src}|{rel}|{tgt}".encode()).hexdigest()
+
+        # 1. RU → Equipment
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT
+                'rel_' || md5(ru.node_id || '|REFINERY_UNIT_HAS_EQUIPMENT|' || eq.node_id),
+                ru.node_id, eq.node_id,
+                'REFINERY_UNIT_HAS_EQUIPMENT',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node ru, kg_node eq
+            WHERE ru.node_type = 'refinery_unit'
+              AND eq.node_type = 'equipment'
+              AND ru.label = eq.properties_json->>'refinery_unit'
+            ON CONFLICT DO NOTHING
+        """)
+
+        # Helper: equipment → domain node matching by ru + norm_code(equipment_code_raw)
+        for domain_type, rel_type, eq_prop in [
+            ('maintenance_order',       'EQUIPMENT_HAS_MAINTENANCE_ORDER',       'equipment_raw'),
+            ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
+            ('reliability_observation', 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
+            ('inspection',              'EQUIPMENT_HAS_INSPECTION',              'equipment_raw'),
+            ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
+            ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
+        ]:
+            connection.execute(f"""
+                INSERT INTO kg_relationship
+                    (relationship_id, source_node_id, target_node_id,
+                     relationship_type, properties_json, is_candidate, confidence)
+                SELECT DISTINCT
+                    'rel_' || md5(eq.node_id || '|{rel_type}|' || dn.node_id),
+                    eq.node_id, dn.node_id,
+                    '{rel_type}',
+                    '{{}}'::jsonb, false, 1.0
+                FROM kg_node eq, kg_node dn
+                WHERE eq.node_type = 'equipment'
+                  AND dn.node_type = '{domain_type}'
+                  AND eq.properties_json->>'refinery_unit' = dn.properties_json->>'refinery_unit'
+                  AND {_norm("eq.properties_json->>'equipment_code_raw'")}
+                    = {_norm(f"dn.properties_json->>'{eq_prop}'")}
+                  AND {_norm("eq.properties_json->>'equipment_code_raw'")} != ''
+                ON CONFLICT DO NOTHING
+            """)
+
+        # RU → domain nodes (matching by refinery_unit label)
+        for domain_type, rel_type in [
+            ('rkap_program',            'REFINERY_UNIT_HAS_RKAP_PROGRAM'),
+            ('equipment_issue',         'REFINERY_UNIT_HAS_ISSUE'),
+            ('readiness_record',        'REFINERY_UNIT_HAS_READINESS_RECORD'),
+            ('oa_availability',         'REFINERY_UNIT_HAS_OA_AVAILABILITY'),
+            ('oa_issue',                'REFINERY_UNIT_HAS_OA_ISSUE'),
+            ('plo_permit',              'REFINERY_UNIT_HAS_PLO_PERMIT'),
+        ]:
+            connection.execute(f"""
+                INSERT INTO kg_relationship
+                    (relationship_id, source_node_id, target_node_id,
+                     relationship_type, properties_json, is_candidate, confidence)
+                SELECT DISTINCT
+                    'rel_' || md5(ru.node_id || '|{rel_type}|' || dn.node_id),
+                    ru.node_id, dn.node_id,
+                    '{rel_type}',
+                    '{{}}'::jsonb, false, 1.0
+                FROM kg_node ru, kg_node dn
+                WHERE ru.node_type = 'refinery_unit'
+                  AND dn.node_type = '{domain_type}'
+                  AND ru.label = dn.properties_json->>'refinery_unit'
+                ON CONFLICT DO NOTHING
+            """)
+
+        counts = fetch_tuple(connection,
+            "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")
+        edge_count = counts[0]
+    finally:
+        connection.close()
+
+    # Update catalog
+    from .config import update_dataset_counts
+    update_dataset_counts(dataset_id, row["node_count"], edge_count, row["issue_count"], row["workbooks"])
+
+    return {"ok": True, "relationships_created": edge_count}
+
+
 @app.get("/api/imports/{job_id}")
 def import_status(job_id: str):
     job = JOBS.get(job_id)
