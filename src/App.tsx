@@ -383,7 +383,8 @@ const ETL_PHASES: Record<string, number> = {
   'Membangun node Equipment': 35, 'Membangun node Maintenance Order': 45,
   'Membangun node RKAP Program': 55, 'Membangun node Reliability': 62,
   'Membangun node Inspection': 68, 'Membangun node ICU Issue': 74,
-  'Membangun node Readiness': 82, 'Menulis output CSV': 88, 'Import ke database': 90,
+  'Membangun node Readiness': 76, 'Membangun node OA Data': 79,
+  'Membangun node PLO': 82, 'Menulis output CSV': 88, 'Import ke database': 90,
 }
 
 function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNavigate: (p: Page) => void }) {
@@ -472,6 +473,8 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
               { name: 'apr_*.xlsx / readiness_atg*.xlsx', desc: 'Readiness & operasi', required: false },
               { name: 'rcps_db_*.xlsx', desc: 'RCPS (sheet: rcps, rekomendasi)', required: false },
               { name: 'issue_list*.xlsx / paf_issue*.xlsx', desc: 'Organization issue list', required: false },
+              { name: 'oa_data*.xlsx', desc: 'Operational Availability, Allowance Unplanned & Issue List (3 sheet)', required: false },
+              { name: 'plo_*.xlsx / plo*.xlsx', desc: 'Perizinan Layak Operasi (PLO) per instalasi', required: false },
             ].map(f => (
               <div key={f.name} className={`file-row status-${f.required ? 'ready' : 'optional'}`}>
                 <div className="file-number">{f.required ? 'R' : 'O'}</div>

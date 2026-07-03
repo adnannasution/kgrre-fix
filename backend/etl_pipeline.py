@@ -57,6 +57,16 @@ def _detect_domain(filename: str, sheet: str) -> str | None:
         return "rcps"
     if "rcps" in stem and sheet_l == "rekomendasi":
         return "rcps_recommendation"
+    # OA_Data: Operational Availability & Allowance Unplanned & Issue List
+    if "oa_data" in stem and "allowance" in sheet_l:
+        return "oa_allowance"
+    if "oa_data" in stem and "operational" in sheet_l:
+        return "oa_availability"
+    if "oa_data" in stem and "issue" in sheet_l:
+        return "oa_issue"
+    # PLO: Perizinan Layak Operasi
+    if stem.startswith("plo") or "plo_" in stem:
+        return "plo"
     return None
 
 
@@ -827,6 +837,204 @@ def _build_readiness_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
 
 
 # ---------------------------------------------------------------------------
+# OA Data: Operational Availability, Allowance Unplanned, Issue List
+# ---------------------------------------------------------------------------
+
+def _build_oa_nodes(con: duckdb.DuckDBPyConnection,
+                    allowance_views: list[str],
+                    availability_views: list[str],
+                    issue_views: list[str]) -> None:
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS oa_allowance_stage (
+            refinery_unit VARCHAR, mi_pi VARCHAR, allowance_day DOUBLE, unplanned_day DOUBLE, month_update VARCHAR
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS oa_availability_stage (
+            refinery_unit VARCHAR, actual_target VARCHAR, value_perc DOUBLE, month_update VARCHAR
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS oa_issue_stage (
+            refinery_unit VARCHAR, mi_pi VARCHAR, issue VARCHAR, month_update VARCHAR, date_issue VARCHAR
+        )
+    """)
+
+    for tname in allowance_views:
+        cols = [r[0].lower() for r in con.execute(f"DESCRIBE {tname}").fetchall()]
+        ru_col  = next((c for c in cols if 'refinery' in c), cols[0])
+        mip_col = next((c for c in cols if 'mi' in c or 'pi' in c), cols[1] if len(cols) > 1 else cols[0])
+        alw_col = next((c for c in cols if 'allowance' in c), cols[2] if len(cols) > 2 else cols[0])
+        unp_col = next((c for c in cols if 'unplanned' in c), cols[3] if len(cols) > 3 else cols[0])
+        mon_col = next((c for c in cols if 'month' in c or 'update' in c), cols[4] if len(cols) > 4 else cols[0])
+        con.execute(f"""
+            INSERT INTO oa_allowance_stage
+            SELECT TRIM(CAST("{ru_col}" AS VARCHAR)), TRIM(CAST("{mip_col}" AS VARCHAR)),
+                   TRY_CAST("{alw_col}" AS DOUBLE), TRY_CAST("{unp_col}" AS DOUBLE),
+                   CAST("{mon_col}" AS VARCHAR)
+            FROM {tname} WHERE "{ru_col}" IS NOT NULL
+        """)
+
+    for tname in availability_views:
+        cols = [r[0].lower() for r in con.execute(f"DESCRIBE {tname}").fetchall()]
+        ru_col  = next((c for c in cols if 'refinery' in c), cols[0])
+        at_col  = next((c for c in cols if 'actual' in c or 'target' in c), cols[1] if len(cols) > 1 else cols[0])
+        val_col = next((c for c in cols if 'value' in c or 'perc' in c), cols[2] if len(cols) > 2 else cols[0])
+        mon_col = next((c for c in cols if 'month' in c or 'update' in c), cols[3] if len(cols) > 3 else cols[0])
+        con.execute(f"""
+            INSERT INTO oa_availability_stage
+            SELECT TRIM(CAST("{ru_col}" AS VARCHAR)), TRIM(CAST("{at_col}" AS VARCHAR)),
+                   TRY_CAST("{val_col}" AS DOUBLE), CAST("{mon_col}" AS VARCHAR)
+            FROM {tname} WHERE "{ru_col}" IS NOT NULL
+        """)
+
+    for tname in issue_views:
+        cols = [r[0].lower() for r in con.execute(f"DESCRIBE {tname}").fetchall()]
+        ru_col  = next((c for c in cols if 'refinery' in c), cols[0])
+        mip_col = next((c for c in cols if 'mi' in c or 'pi' in c), cols[1] if len(cols) > 1 else cols[0])
+        iss_col = next((c for c in cols if 'issue' in c), cols[2] if len(cols) > 2 else cols[0])
+        mon_col = next((c for c in cols if 'month' in c), cols[3] if len(cols) > 3 else cols[0])
+        dat_col = next((c for c in cols if 'date' in c), cols[4] if len(cols) > 4 else cols[0])
+        con.execute(f"""
+            INSERT INTO oa_issue_stage
+            SELECT TRIM(CAST("{ru_col}" AS VARCHAR)), TRIM(CAST("{mip_col}" AS VARCHAR)),
+                   TRIM(CAST("{iss_col}" AS VARCHAR)), CAST("{mon_col}" AS VARCHAR),
+                   CAST("{dat_col}" AS VARCHAR)
+            FROM {tname} WHERE "{ru_col}" IS NOT NULL AND "{iss_col}" IS NOT NULL
+        """)
+
+    # OA availability nodes
+    con.execute("""
+        INSERT INTO node_raw (node_id, node_type, business_key, label, domain,
+                              properties_json, source_file, source_sheet, source_row, source_record_id)
+        SELECT
+            'oa_avail_' || norm_code(a.refinery_unit || '_' || a.actual_target || '_' || a.month_update),
+            'oa_availability', a.refinery_unit || '|' || a.actual_target,
+            a.refinery_unit || ' OA ' || a.actual_target || ' (' || LEFT(a.month_update, 7) || ')',
+            'oa',
+            json_object('refinery_unit', a.refinery_unit, 'actual_target', a.actual_target,
+                        'value_perc', COALESCE(CAST(a.value_perc AS VARCHAR), ''),
+                        'month_update', a.month_update),
+            'oa_data', 'Operational Availability', row_number() OVER (), ''
+        FROM oa_availability_stage a WHERE a.refinery_unit IS NOT NULL
+    """)
+
+    # OA issue nodes
+    con.execute("""
+        INSERT INTO node_raw (node_id, node_type, business_key, label, domain,
+                              properties_json, source_file, source_sheet, source_row, source_record_id)
+        SELECT
+            'oa_issue_' || norm_code(oi.refinery_unit || '_' || oi.issue || '_' || oi.month_update),
+            'oa_issue', oi.refinery_unit || '|' || LEFT(oi.issue, 40),
+            LEFT(oi.issue, 80), 'oa',
+            json_object('refinery_unit', oi.refinery_unit, 'mi_pi', oi.mi_pi,
+                        'issue', oi.issue, 'month_update', oi.month_update,
+                        'date_issue', oi.date_issue),
+            'oa_data', 'Issue List', row_number() OVER (), ''
+        FROM oa_issue_stage oi
+    """)
+
+    # Edges: RU → OA availability
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, n.node_id, 'REFINERY_UNIT_HAS_OA_AVAILABILITY',
+               'oa', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', r.refinery_unit),
+               'oa_data', 'Operational Availability', 0, ''
+        FROM node_raw n
+        JOIN oa_availability_stage a
+          ON n.node_type = 'oa_availability'
+         AND json_extract_string(n.properties_json, '$.refinery_unit') = a.refinery_unit
+        JOIN ru_reference r ON norm_text(a.refinery_unit) = norm_text(r.refinery_unit)
+    """)
+
+    # Edges: RU → OA issue
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, n.node_id, 'REFINERY_UNIT_HAS_OA_ISSUE',
+               'oa', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', r.refinery_unit),
+               'oa_data', 'Issue List', 0, ''
+        FROM node_raw n
+        JOIN oa_issue_stage oi
+          ON n.node_type = 'oa_issue'
+         AND json_extract_string(n.properties_json, '$.refinery_unit') = oi.refinery_unit
+         AND json_extract_string(n.properties_json, '$.issue') = oi.issue
+        JOIN ru_reference r ON norm_text(oi.refinery_unit) = norm_text(r.refinery_unit)
+    """)
+
+
+# ---------------------------------------------------------------------------
+# PLO: Perizinan Layak Operasi
+# ---------------------------------------------------------------------------
+
+def _build_plo_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS plo_stage (
+            refinery_unit VARCHAR, nomor_ijin VARCHAR, nama_plo VARCHAR,
+            kapasitas VARCHAR, date_expired VARCHAR, days_expired INTEGER, status_plo VARCHAR
+        )
+    """)
+
+    for tname in views:
+        cols = [r[0].lower() for r in con.execute(f"DESCRIBE {tname}").fetchall()]
+        ru_col   = next((c for c in cols if 'refinery' in c), cols[0])
+        no_col   = next((c for c in cols if 'nomor' in c or 'ijin' in c or 'number' in c), cols[1] if len(cols) > 1 else cols[0])
+        nm_col   = next((c for c in cols if 'nama' in c or 'name' in c), cols[2] if len(cols) > 2 else cols[0])
+        kap_col  = next((c for c in cols if 'cakupan' in c or 'kapasitas' in c or 'capacity' in c), cols[3] if len(cols) > 3 else cols[0])
+        exp_col  = next((c for c in cols if 'expired' in c and 'sum' not in c and 'days' not in c and 'day' not in c), cols[4] if len(cols) > 4 else cols[0])
+        days_col = next((c for c in cols if 'days' in c or ('sum' in c and 'expired' in c)), cols[5] if len(cols) > 5 else cols[0])
+        st_col   = next((c for c in cols if 'status' in c), cols[6] if len(cols) > 6 else cols[0])
+        con.execute(f"""
+            INSERT INTO plo_stage
+            SELECT TRIM(CAST("{ru_col}" AS VARCHAR)), TRIM(CAST("{no_col}" AS VARCHAR)),
+                   TRIM(CAST("{nm_col}" AS VARCHAR)), TRIM(CAST("{kap_col}" AS VARCHAR)),
+                   CAST("{exp_col}" AS VARCHAR), TRY_CAST("{days_col}" AS INTEGER),
+                   TRIM(CAST("{st_col}" AS VARCHAR))
+            FROM {tname}
+            WHERE "{ru_col}" ILIKE '%RU%' AND "{no_col}" IS NOT NULL AND "{no_col}" != ''
+        """)
+
+    con.execute("""
+        INSERT INTO node_raw (node_id, node_type, business_key, label, domain,
+                              properties_json, source_file, source_sheet, source_row, source_record_id)
+        SELECT
+            'plo_' || norm_code(p.nomor_ijin), 'plo_permit', p.nomor_ijin,
+            LEFT(p.nama_plo, 80), 'plo',
+            json_object('refinery_unit', p.refinery_unit, 'nomor_ijin', p.nomor_ijin,
+                        'nama_plo', p.nama_plo, 'kapasitas', p.kapasitas,
+                        'date_expired', p.date_expired,
+                        'days_expired', COALESCE(CAST(p.days_expired AS VARCHAR), ''),
+                        'status_plo', COALESCE(p.status_plo, '')),
+            'plo', 'Sheet1', row_number() OVER (), p.nomor_ijin
+        FROM plo_stage p WHERE p.nomor_ijin IS NOT NULL AND p.nomor_ijin != ''
+    """)
+
+    # Edges: RU → PLO permit (match "RU II Dumai" → "RU II")
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, n.node_id, 'REFINERY_UNIT_HAS_PLO_PERMIT',
+               'plo', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', r.refinery_unit, 'status_plo', p.status_plo),
+               'plo', 'Sheet1', 0, ''
+        FROM node_raw n
+        JOIN plo_stage p ON n.business_key = p.nomor_ijin AND n.node_type = 'plo_permit'
+        JOIN ru_reference r
+          ON norm_text(SPLIT_PART(p.refinery_unit, ' ', 1) || ' ' || SPLIT_PART(p.refinery_unit, ' ', 2))
+           = norm_text(r.refinery_unit)
+    """)
+
+
+# ---------------------------------------------------------------------------
 # Output writer
 # ---------------------------------------------------------------------------
 
@@ -890,13 +1098,16 @@ def _write_outputs(con: duckdb.DuckDBPyConnection, out_dir: Path) -> dict[str, i
         ('inspection_issue', 'inspection', 'domain_inspection_issue.csv'),
         ('readiness_operation', 'readiness_record', 'domain_readiness_operation.csv'),
         ('cost_program', 'rkap_program', 'domain_cost_program.csv'),
+        ('oa', 'oa_availability', 'domain_oa_availability.csv'),
+        ('oa', 'oa_issue', 'domain_oa_issue.csv'),
+        ('plo', 'plo_permit', 'domain_plo_permit.csv'),
     ]:
         con.execute(f"""
             COPY (
                 SELECT node_id, node_type, label,
                        source_file, source_sheet, source_row, source_record_id,
                        properties_json
-                FROM node_raw WHERE domain = '{domain}'
+                FROM node_raw WHERE node_type = '{node_type}'
             ) TO '{out_dir}/{fname}' (HEADER, DELIMITER ',')
         """)
 
@@ -938,6 +1149,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
             "equipment": [], "maintenance": [], "rkap": [],
             "reliability": [], "inspection": [], "readiness": [],
             "icu_issue": [], "org_issue": [], "rcps": [], "rcps_recommendation": [],
+            "oa_allowance": [], "oa_availability": [], "oa_issue": [], "plo": [],
         }
 
         job.phase = "Membaca sheet Excel"
@@ -980,6 +1192,14 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         job.progress = 74
         job.phase = "Membangun node Readiness"
         _build_readiness_nodes(con, domain_views["readiness"])
+
+        job.progress = 76
+        job.phase = "Membangun node OA Data"
+        _build_oa_nodes(con, domain_views["oa_allowance"], domain_views["oa_availability"], domain_views["oa_issue"])
+
+        job.progress = 79
+        job.phase = "Membangun node PLO"
+        _build_plo_nodes(con, domain_views["plo"])
 
         job.progress = 82
         job.phase = "Menulis output CSV"
