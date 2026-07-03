@@ -574,17 +574,6 @@ const CHUNK_SIZE = 5 * 1024 * 1024 // 5 MB
 
 type ChunkFileState = { file: File; uploaded: number; total: number; done: boolean }
 
-const CSV_FILES = [
-  { name: 'nodes.csv', required: true },
-  { name: 'relationships.csv', required: true },
-  { name: 'domain_equipment.csv', required: false },
-  { name: 'domain_reliability.csv', required: false },
-  { name: 'domain_maintenance.csv', required: false },
-  { name: 'domain_readiness_operation.csv', required: false },
-  { name: 'domain_inspection_issue.csv', required: false },
-  { name: 'domain_cost_program.csv', required: false },
-]
-
 type UploadPhase = 'idle' | 'uploading' | 'committed' | 'done' | 'error'
 
 function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJobStart: (job: ImportJob) => void; disabled: boolean }) {
@@ -592,13 +581,21 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
   const [phase, setPhase] = useState<UploadPhase>('idle')
   const [activeFile, setActiveFile] = useState<string>()
   const [error, setError] = useState<string>()
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  const handleFile = (fileName: string, file: File | undefined) => {
-    if (!file) return
-    setFiles(prev => ({ ...prev, [fileName]: { file, uploaded: 0, total: Math.ceil(file.size / CHUNK_SIZE), done: false } }))
+  const addFiles = (incoming: FileList | null) => {
+    if (!incoming) return
+    setFiles(prev => {
+      const next = { ...prev }
+      Array.from(incoming).forEach(f => {
+        next[f.name] = { file: f, uploaded: 0, total: Math.ceil(f.size / CHUNK_SIZE), done: false }
+      })
+      return next
+    })
   }
 
-  // total progress across all selected files
+  const removeFile = (fn: string) => setFiles(prev => { const n = { ...prev }; delete n[fn]; return n })
+
   const totalChunks = Object.values(files).reduce((s, f) => s + f.total, 0)
   const uploadedChunks = Object.values(files).reduce((s, f) => s + f.uploaded, 0)
   const uploadPct = totalChunks > 0 ? Math.round((uploadedChunks / totalChunks) * 100) : 0
@@ -607,7 +604,7 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
     setError(undefined)
     const entries = Object.entries(files).filter(([, s]) => s.file)
     if (!entries.some(([n]) => n === 'nodes.csv') || !entries.some(([n]) => n === 'relationships.csv')) {
-      setError('nodes.csv dan relationships.csv wajib dipilih.')
+      setError('nodes.csv dan relationships.csv wajib disertakan.')
       return
     }
     setPhase('uploading')
@@ -634,74 +631,91 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
     }
   }
 
-  const allSelected = files['nodes.csv'] && files['relationships.csv']
-  const fileSizeMb = (f: ChunkFileState) => (f.file.size / 1024 / 1024).toFixed(1)
+  const hasRequired = files['nodes.csv'] && files['relationships.csv']
+  const fileList = Object.entries(files)
   const filePct = (f: ChunkFileState) => f.total > 0 ? Math.round((f.uploaded / f.total) * 100) : 0
+  const fileMb = (f: ChunkFileState) => (f.file.size / 1024 / 1024).toFixed(1)
 
   return (
-    <section className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-      <div>
-        <label style={{ fontWeight: 600 }}>Upload file CSV langsung (chunked — cocok untuk file besar)</label>
-        <p className="warning-text" style={{ marginTop: '4px' }}><UploadIcon />File dipotong otomatis {CHUNK_SIZE / 1024 / 1024} MB per chunk sehingga tidak timeout.</p>
+    <section className="panel chunked-panel">
+      <div className="chunked-panel-header">
+        <div>
+          <label className="chunked-panel-title">Upload CSV langsung — chunked</label>
+          <p className="chunked-panel-sub">Pilih satu atau beberapa file CSV sekaligus. File dipotong otomatis {CHUNK_SIZE / 1024 / 1024} MB/chunk · <b>nodes.csv</b> dan <b>relationships.csv</b> wajib ada.</p>
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gap: '10px' }}>
-        {CSV_FILES.map(({ name: fn, required }) => {
-          const state = files[fn]
-          const pct = state ? filePct(state) : 0
-          const isActive = activeFile === fn
-          return (
-            <div key={fn} style={{ display: 'grid', gap: '4px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ minWidth: '230px', fontFamily: 'monospace', fontSize: '13px' }}>
-                  {fn}{required ? <span style={{ color: 'var(--orange, #f59e0b)', marginLeft: '4px' }}>*</span> : ''}
-                </span>
-                <input type="file" accept=".csv" disabled={phase === 'uploading'} onChange={e => handleFile(fn, e.target.files?.[0])} />
-                {state && (
-                  <span style={{ fontSize: '12px', minWidth: '100px', color: state.done ? 'var(--green, #22c55e)' : isActive ? 'var(--blue, #3b82f6)' : 'var(--muted)' }}>
-                    {state.done
-                      ? '✓ selesai'
-                      : isActive
-                        ? `${pct}% · ${state.uploaded}/${state.total} chunk`
-                        : `${fileSizeMb(state)} MB · siap`}
+      {/* Drop zone / file picker */}
+      <div
+        className={`chunked-dropzone${phase === 'uploading' ? ' disabled' : ''}`}
+        onClick={() => phase !== 'uploading' && inputRef.current?.click()}
+        onDragOver={e => { e.preventDefault() }}
+        onDrop={e => { e.preventDefault(); if (phase !== 'uploading') addFiles(e.dataTransfer.files) }}
+      >
+        <UploadIcon />
+        <span>Klik atau seret file CSV ke sini</span>
+        <small>Bisa pilih banyak file sekaligus</small>
+        <input ref={inputRef} type="file" accept=".csv" multiple style={{ display: 'none' }} onChange={e => addFiles(e.target.files)} />
+      </div>
+
+      {/* File list */}
+      {fileList.length > 0 && (
+        <div className="chunked-file-list">
+          {fileList.map(([fn, state]) => {
+            const pct = filePct(state)
+            const isActive = activeFile === fn
+            const isRequired = fn === 'nodes.csv' || fn === 'relationships.csv'
+            return (
+              <div key={fn} className="chunked-file-row">
+                <div className="chunked-file-info">
+                  <span className="chunked-file-name">
+                    {fn}
+                    {isRequired && <span className="chunked-required">wajib</span>}
                   </span>
+                  <span className="chunked-file-meta">
+                    {state.done ? '✓ selesai' : isActive ? `${pct}% · chunk ${state.uploaded}/${state.total}` : `${fileMb(state)} MB · siap`}
+                  </span>
+                </div>
+                {phase === 'uploading' && (
+                  <div className="chunked-file-bar">
+                    <div style={{ width: `${pct}%`, background: state.done ? '#22c55e' : '#3b82f6' }} />
+                  </div>
+                )}
+                {phase !== 'uploading' && (
+                  <button className="chunked-remove" onClick={() => removeFile(fn)} title="Hapus file ini">✕</button>
                 )}
               </div>
-              {state && phase === 'uploading' && (
-                <div style={{ height: '4px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden', marginLeft: '230px' }}>
-                  <div style={{ height: '100%', width: `${pct}%`, background: state.done ? 'var(--green, #22c55e)' : 'var(--blue, #3b82f6)', transition: 'width 0.2s' }} />
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
 
+      {/* Total progress */}
       {phase === 'uploading' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-            <span>Total upload: <b>{uploadedChunks}/{totalChunks} chunk</b>{activeFile ? ` · sedang: ${activeFile}` : ''}</span>
+        <div className="chunked-progress">
+          <div className="chunked-progress-label">
+            <span>{activeFile ? `Mengupload: ${activeFile}` : 'Memproses…'}</span>
             <b>{uploadPct}%</b>
           </div>
-          <div style={{ height: '8px', background: 'var(--border)', borderRadius: '4px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${uploadPct}%`, background: 'var(--blue, #3b82f6)', transition: 'width 0.15s' }} />
+          <div className="chunked-progress-bar">
+            <div style={{ width: `${uploadPct}%` }} />
           </div>
-          <p style={{ fontSize: '12px', color: 'var(--muted)', margin: 0 }}>Jangan tutup browser selama upload berlangsung.</p>
+          <p className="chunked-notice">Jangan tutup browser selama upload berlangsung.</p>
         </div>
       )}
 
       {phase === 'committed' && (
-        <div style={{ padding: '12px 16px', background: 'var(--green-subtle, #dcfce7)', borderRadius: '8px', border: '1px solid var(--green, #22c55e)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          <b style={{ color: 'var(--green, #16a34a)' }}>✓ Upload selesai — import berjalan di server</b>
-          <p style={{ margin: 0, fontSize: '13px' }}>Browser sudah aman untuk ditutup. Proses import tetap berjalan di background Railway dan tidak terpengaruh koneksi browser.</p>
+        <div className="chunked-success">
+          <b>✓ Upload selesai — import berjalan di server</b>
+          <p>Browser sudah aman untuk ditutup. Proses import tetap berjalan di background.</p>
         </div>
       )}
 
       {error && <p className="job-error">{error}</p>}
 
       {phase !== 'committed' && (
-        <button className="secondary large" disabled={!allSelected || phase === 'uploading' || disabled} onClick={() => void startUpload()}>
-          {phase === 'uploading' ? `Mengunggah… ${uploadPct}%` : 'Upload & Import CSV'} <ChevronIcon />
+        <button className="secondary large" disabled={!hasRequired || phase === 'uploading' || disabled} onClick={() => void startUpload()}>
+          {phase === 'uploading' ? `Mengunggah… ${uploadPct}%` : `Upload & Import CSV${fileList.length > 0 ? ` (${fileList.length} file)` : ''}`} <ChevronIcon />
         </button>
       )}
     </section>
