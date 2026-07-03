@@ -2617,10 +2617,8 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
             <thead>
               <tr>
                 <th>Nama dataset</th>
-                <th>Mode</th>
                 <th className="num">Node</th>
                 <th className="num">Relasi</th>
-                <th className="num">File</th>
                 <th>Dibuat</th>
                 <th></th>
               </tr>
@@ -2636,10 +2634,8 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                         {dataset.id === activeId && <span className="dm-badge">Aktif</span>}
                       </button>
                     </td>
-                    <td><span className="dm-mode">{modeLabel[dataset.mode] ?? dataset.mode}</span></td>
                     <td className="num">{format(dataset.node_count)}</td>
                     <td className="num">{format(dataset.edge_count)}</td>
-                    <td className="num">{dataset.workbooks.length}</td>
                     <td className="dm-date">{fmtDate(dataset.created_at)}</td>
                     <td>
                       <div className="dm-actions">
@@ -2668,60 +2664,23 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                   </tr>
                   {expanded === dataset.id && (
                     <tr key={`${dataset.id}-files`} className="dm-files-row">
-                      <td colSpan={7}>
+                      <td colSpan={5}>
                         <div className="dm-files">
-                          {fileLoading === dataset.id
-                            ? <span className="dm-no-files">Memuat daftar file…</span>
-                            : (() => {
-                                const rows = fileRows[dataset.id] ?? []
-                                if (!rows.length) return <span className="dm-no-files">Tidak ada data file tercatat.</span>
-                                // group by workbook
-                                const byFile = rows.reduce<Record<string, LoadSummaryRow[]>>((acc, r) => {
-                                  const k = r.workbook || '(tanpa nama)'
-                                  ;(acc[k] ??= []).push(r)
-                                  return acc
-                                }, {})
-                                return (
-                                  <div className="dm-file-groups">
-                                    {Object.entries(byFile).map(([wb, sheets]) => (
-                                      <div key={wb} className="dm-file-group">
-                                        <div className="dm-file-group-header">
-                                          <span className="dm-file-icon">📄</span>
-                                          <span className="dm-file-group-name">{wb}</span>
-                                          <span className="dm-file-group-meta">
-                                            {sheets.length} sheet · {format(sheets.reduce((s, r) => s + (r.node_count || 0), 0))} node
-                                          </span>
-                                        </div>
-                                        <table className="dm-sheet-table">
-                                          <thead>
-                                            <tr>
-                                              <th>Sheet</th>
-                                              <th className="num">Baris</th>
-                                              <th className="num">Node</th>
-                                              <th className="num">Relasi</th>
-                                              <th className="num">Issue</th>
-                                              <th>Status</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {sheets.map((r, i) => (
-                                              <tr key={i}>
-                                                <td>{r.sheet_name || '—'}</td>
-                                                <td className="num">{format(r.row_count)}</td>
-                                                <td className="num">{format(r.node_count)}</td>
-                                                <td className="num">{format(r.edge_count)}</td>
-                                                <td className="num">{r.issue_count > 0 ? <span className="dm-issue-count">{format(r.issue_count)}</span> : format(r.issue_count)}</td>
-                                                <td><span className="dm-status">{statusIcon(r.status)}</span></td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    ))}
+                          {dataset.workbooks.length > 0 ? (
+                            <div className="dm-file-groups">
+                              <div className="dm-workbook-list-title">File yang diupload ({dataset.workbooks.length} file)</div>
+                              {dataset.workbooks.map((wb, i) => (
+                                <div key={i} className="dm-file-group">
+                                  <div className="dm-file-group-header">
+                                    <span className="dm-file-icon">📄</span>
+                                    <span className="dm-file-group-name">{wb}</span>
                                   </div>
-                                )
-                              })()
-                          }
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="dm-no-files">Tidak ada file yang tercatat.</span>
+                          )}
                         </div>
                       </td>
                     </tr>

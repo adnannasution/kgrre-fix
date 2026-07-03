@@ -413,6 +413,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .reset-all-btn:hover:not(:disabled) { background: var(--red); color: #fff; }
 .reset-all-btn:disabled { opacity: .5; cursor: not-allowed; }
 .hero-stat-num { display: block; font-family: var(--display); font-size: 48px; font-weight: 900; color: var(--blue); line-height: 1; }
+.dm-workbook-list-title { font-size: var(--fs-xs); font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
 .sync-status-panel { margin-top: var(--space-md); padding: var(--space-md); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 .sync-status-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: var(--fs-sm); }
 .sync-progress-bar { height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; margin-bottom: 8px; }
