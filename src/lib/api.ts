@@ -114,3 +114,40 @@ export const api = {
   analysis: (id: string, name: string) => request<Record<string, unknown>[]>(`/datasets/${id}/analysis/${name}`),
   exportUrl: (id: string, kind: string) => `${API}/datasets/${id}/export/${kind}`,
 }
+
+export async function streamDiagnosis(
+  prompt: string,
+  role: string,
+  onChunk: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API}/diagnosis/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, role }),
+    signal,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || 'Gagal menghubungi server.')
+  }
+  const reader = res.body!.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        const parsed = JSON.parse(payload) as { text?: string }
+        if (parsed.text) onChunk(parsed.text)
+      } catch { /* skip malformed */ }
+    }
+  }
+}

@@ -14,7 +14,7 @@ import {
   TrashIcon,
   UploadIcon,
 } from './components/Icons'
-import { api } from './lib/api'
+import { api, streamDiagnosis } from './lib/api'
 import type {
   DatasetStats,
   DatasetSummary,
@@ -1392,6 +1392,12 @@ function GraphInsightHelper({
   const [readinessContext, setReadinessContext] = useState<ReadinessContext>()
   const [analysisEvidence, setAnalysisEvidence] = useState<AnalysisEvidence>({})
   const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [generating, setGenerating] = useState<DiagnosticRole | ''>('')
+  const [generatedRole, setGeneratedRole] = useState<DiagnosticRole | ''>('')
+  const [generatedText, setGeneratedText] = useState('')
+  const [generateError, setGenerateError] = useState('')
+  const [showDashboard, setShowDashboard] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
   useEffect(() => {
     let cancelled = false
     setReadinessContext(undefined)
@@ -1426,6 +1432,34 @@ function GraphInsightHelper({
     setCopied(didCopy ? role : 'failed')
     window.setTimeout(() => setCopied(''), 1600)
   }
+  const generateAnalysis = async (role: DiagnosticRole) => {
+    if (generating) {
+      abortRef.current?.abort()
+      abortRef.current = null
+      setGenerating('')
+      return
+    }
+    const prompt = buildRoleDiagnosticPrompt(role, insight, diagnosisEvidence, relatedNodeEvidence)
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    setGenerating(role)
+    setGeneratedRole(role)
+    setGeneratedText('')
+    setGenerateError('')
+    setShowDashboard(true)
+    try {
+      await streamDiagnosis(prompt, role, (chunk) => {
+        setGeneratedText((prev) => prev + chunk)
+      }, ctrl.signal)
+    } catch (err: unknown) {
+      if ((err as { name?: string }).name !== 'AbortError') {
+        setGenerateError((err as Error).message || 'Gagal menghubungi server.')
+      }
+    } finally {
+      setGenerating('')
+      abortRef.current = null
+    }
+  }
   return (
     <section className={`graph-insight ${insightOpen ? 'open' : 'collapsed'}`}>
       <div className="graph-insight-head">
@@ -1456,6 +1490,19 @@ function GraphInsightHelper({
           <button className="primary small" title="Copy maintenance manager prompt" onClick={() => void copyPrompt('maintenance_manager')}>{copied === 'maintenance_manager' ? 'Copied ✓' : 'Maintenance Mgr'}</button>
           <button className="primary small" title="Copy VP Reliability prompt" onClick={() => void copyPrompt('vp')}>{copied === 'vp' ? 'Copied ✓' : 'VP Reliability'}</button>
           {copied === 'failed' ? <small className="copy-error">Clipboard blocked</small> : null}
+          <span className="eyebrow" style={{marginLeft: '8px'}}>Generate:</span>
+          {(['engineer', 'reliability_manager', 'maintenance_manager', 'vp'] as DiagnosticRole[]).map((role) => {
+            const labels: Record<DiagnosticRole, string> = { engineer: 'Engineer', reliability_manager: 'Reliability Mgr', maintenance_manager: 'Maintenance Mgr', vp: 'VP Reliability' }
+            const isActive = generating === role
+            return (
+              <button key={role} className={`generate-btn small${isActive ? ' active' : ''}`} title={`Generate ${labels[role]} analysis`} onClick={() => void generateAnalysis(role)}>
+                {isActive ? '⏹ Stop' : `⚡ ${labels[role]}`}
+              </button>
+            )
+          })}
+          {generatedText && !generating && (
+            <button className="primary small" onClick={() => setShowDashboard(true)}>Lihat Hasil</button>
+          )}
         </div>
       </div>
       {insightOpen && (
@@ -1469,6 +1516,15 @@ function GraphInsightHelper({
             {insight.facts.map((fact) => <span key={fact}>{fact}</span>)}
           </div>
         </>
+      )}
+      {showDashboard && (
+        <DiagnosisDashboard
+          role={generatedRole as DiagnosticRole}
+          text={generatedText}
+          generating={!!generating}
+          error={generateError}
+          onClose={() => setShowDashboard(false)}
+        />
       )}
     </section>
   )
@@ -1490,6 +1546,127 @@ async function copyText(text: string) {
     textarea.remove()
     return ok
   }
+}
+
+function DiagnosisDashboard({ role, text, generating, error, onClose }: {
+  role: DiagnosticRole
+  text: string
+  generating: boolean
+  error: string
+  onClose: () => void
+}) {
+  const roleLabels: Record<DiagnosticRole, string> = {
+    engineer: 'Engineer',
+    reliability_manager: 'Reliability Manager',
+    maintenance_manager: 'Maintenance Manager',
+    vp: 'VP Reliability',
+  }
+  const sections = parseDiagnosisSections(text)
+  return (
+    <div className="diagnosis-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="diagnosis-modal">
+        <div className="diagnosis-modal-header">
+          <div>
+            <span className="eyebrow">Diagnosis Analysis</span>
+            <h2>Laporan {roleLabels[role] ?? role}</h2>
+          </div>
+          <button className="diagnosis-modal-close" onClick={onClose} aria-label="Tutup">✕</button>
+        </div>
+        {generating && (
+          <div className="diagnosis-generating">
+            <span className="spinner" />
+            <span>Sedang menganalisis…</span>
+          </div>
+        )}
+        {error && <div className="diagnosis-error">{error}</div>}
+        {!text && !generating && !error && (
+          <div className="diagnosis-empty">Belum ada hasil.</div>
+        )}
+        {text && (
+          <div className="diagnosis-body">
+            {sections.length > 0 ? sections.map((sec, i) => (
+              <div key={i} className={`diagnosis-section diagnosis-section-${sec.type}`}>
+                {sec.heading && <h3 className="diagnosis-section-heading">{sec.heading}</h3>}
+                <DiagnosisContent content={sec.content} />
+              </div>
+            )) : <DiagnosisContent content={text} />}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+type DiagnosisSection = { type: 'fact-finding' | 'analysis' | 'summary' | 'other'; heading: string; content: string }
+
+function parseDiagnosisSections(text: string): DiagnosisSection[] {
+  const headingRe = /^#{1,3}\s+(.+)$/m
+  const lines = text.split('\n')
+  const sections: DiagnosisSection[] = []
+  let current: DiagnosisSection | null = null
+  for (const line of lines) {
+    const m = line.match(/^#{1,3}\s+(.+)$/)
+    if (m) {
+      if (current) sections.push(current)
+      const h = m[1].toLowerCase()
+      const type: DiagnosisSection['type'] = h.includes('fact') || h.includes('finding') || h.includes('temuan') ? 'fact-finding'
+        : h.includes('analisis') || h.includes('analysis') ? 'analysis'
+        : h.includes('summary') || h.includes('ringkasan') || h.includes('diagnosis') ? 'summary'
+        : 'other'
+      current = { type, heading: m[1], content: '' }
+    } else if (current) {
+      current.content += line + '\n'
+    } else if (line.trim()) {
+      current = { type: 'other', heading: '', content: line + '\n' }
+    }
+  }
+  if (current) sections.push(current)
+  // drop empty headingRe usage to avoid unused var warning
+  void headingRe
+  return sections
+}
+
+function DiagnosisContent({ content }: { content: string }) {
+  const lines = content.split('\n')
+  const elements: React.ReactNode[] = []
+  let tableLines: string[] = []
+
+  const flushTable = () => {
+    if (tableLines.length < 2) {
+      tableLines.forEach((l) => elements.push(<p key={elements.length}>{l}</p>))
+      tableLines = []
+      return
+    }
+    const [header, , ...rows] = tableLines
+    const cols = header.split('|').map(s => s.trim()).filter(Boolean)
+    elements.push(
+      <div key={elements.length} className="diagnosis-table-wrap">
+        <table className="diagnosis-table">
+          <thead><tr>{cols.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>
+          <tbody>{rows.map((row, ri) => {
+            const cells = row.split('|').map(s => s.trim()).filter(Boolean)
+            return <tr key={ri}>{cells.map((c, ci) => <td key={ci}>{c}</td>)}</tr>
+          })}</tbody>
+        </table>
+      </div>
+    )
+    tableLines = []
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('|')) {
+      tableLines.push(line)
+      continue
+    }
+    if (tableLines.length) flushTable()
+    if (!line.trim()) { elements.push(<br key={elements.length} />); continue }
+    if (/^\d+\.\s/.test(line)) { elements.push(<p key={elements.length} className="diagnosis-list-item">{line}</p>); continue }
+    if (/^[-*]\s/.test(line)) { elements.push(<p key={elements.length} className="diagnosis-bullet">{line.slice(2)}</p>); continue }
+    if (/^\*\*(.+)\*\*$/.test(line)) { elements.push(<p key={elements.length}><strong>{line.replace(/\*\*/g, '')}</strong></p>); continue }
+    elements.push(<p key={elements.length}>{line.replace(/\*\*([^*]+)\*\*/g, (_, t) => t)}</p>)
+  }
+  if (tableLines.length) flushTable()
+  return <>{elements}</>
 }
 
 type GraphInsight = ReturnType<typeof buildGraphInsight>
