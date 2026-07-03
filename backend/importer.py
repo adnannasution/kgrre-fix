@@ -47,6 +47,7 @@ class ImportJob:
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancelled: bool = False
+    detection_log: list = field(default_factory=list)
 
     def public(self) -> dict:
         return {
@@ -54,6 +55,7 @@ class ImportJob:
             "phase": self.phase, "progress": self.progress, "message": self.message,
             "dataset_id": self.dataset_id, "error": self.error,
             "started_at": self.started_at, "finished_at": self.finished_at,
+            "detection_log": self.detection_log,
         }
 
 

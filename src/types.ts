@@ -117,6 +117,7 @@ export interface ImportJob {
   error?: string
   started_at: number
   finished_at?: number
+  detection_log?: string[]
 }
 
 export interface GraphSlice {

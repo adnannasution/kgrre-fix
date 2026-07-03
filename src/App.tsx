@@ -462,21 +462,21 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
         <details className="settings panel">
           <summary>Panduan deteksi otomatis nama file</summary>
           <p style={{ fontSize: '13px', color: 'var(--muted)', margin: '8px 0 12px' }}>
-            ETL mendeteksi domain dari nama file. File dengan nama di luar pola ini tetap bisa diupload — hanya tidak akan terdeteksi domainnya dan dilewati.
+            ETL mendeteksi domain dari <b>nama kolom</b> (prioritas utama) lalu nama file sebagai fallback. Setelah upload selesai akan muncul log deteksi per sheet — cek di sana jika ada domain yang tidak terdeteksi.
           </p>
-          <div className="file-grid">
+          <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 8px' }}>Sinyal kolom kunci per domain:</p>
+          <div className="file-grid" style={{ marginBottom: '12px' }}>
             {[
-              { name: 'all_ru_equipment_*.xlsx', desc: 'Master equipment (sheet: Sheet4)', required: true },
-              { name: 'pt02_*.xlsx / pt03_*.xlsx', desc: 'Maintenance order & notification', required: false },
-              { name: 'vw_reportirkapplanactual*.xlsx', desc: 'RKAP / cost program', required: false },
-              { name: 'running_hours_*.xlsx / n_0_*.xlsx', desc: 'Reliability & running hours', required: false },
-              { name: 'inspection_plan*.xlsx', desc: 'Inspection plan', required: false },
-              { name: 'icu_database*.xlsx / icu*.xlsx', desc: 'ICU issue database', required: false },
-              { name: 'apr_*.xlsx / readiness_atg*.xlsx', desc: 'Readiness & operasi', required: false },
-              { name: 'rcps_db_*.xlsx', desc: 'RCPS (sheet: rcps, rekomendasi)', required: false },
-              { name: 'issue_list*.xlsx / paf_issue*.xlsx', desc: 'Organization issue list', required: false },
-              { name: 'oa_data*.xlsx', desc: 'Operational Availability, Allowance Unplanned & Issue List (3 sheet)', required: false },
-              { name: 'plo_*.xlsx / plo*.xlsx', desc: 'Perizinan Layak Operasi (PLO) per instalasi', required: false },
+              { name: 'Equipment Master', desc: 'functional_location / floc, criticallity / criticality, equipment_group, tag_no / tag_number / kode_equipment', required: true },
+              { name: 'Maintenance Order', desc: 'order / aufnr / order_number, work_center / arbpl, order_type, system_status', required: false },
+              { name: 'RKAP Program', desc: 'cost_program / cost_element, plan_idr / actual_idr, atau nama file/sheet mengandung "rkap"', required: false },
+              { name: 'Reliability', desc: 'mtbf / mttr, running_hours / jam_operasi, atau failure_date + equipment', required: false },
+              { name: 'Inspection', desc: 'next_inspection / last_inspection / inspection_date, atau nama sheet mengandung "inspection"', required: false },
+              { name: 'Readiness', desc: 'status_operation / status_operasi (sangat khas)', required: false },
+              { name: 'ICU Issue', desc: 'nama file mengandung "icu"', required: false },
+              { name: 'RCPS', desc: 'root_cause / akar_masalah, fishbone, why_1/why_2/why_3', required: false },
+              { name: 'OA Data', desc: 'operational_availability, actual_target + value_perc', required: false },
+              { name: 'PLO', desc: 'nama file dimulai "plo"', required: false },
             ].map(f => (
               <div key={f.name} className={`file-row status-${f.required ? 'ready' : 'optional'}`}>
                 <div className="file-number">{f.required ? 'R' : 'O'}</div>
@@ -552,6 +552,26 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
                 <b style={{ color: 'var(--green, #16a34a)' }}>✓ Knowledge Graph berhasil dibuat</b>
                 <p style={{ margin: '4px 0 0', fontSize: '13px' }}>{job.message}</p>
               </div>
+              {job.detection_log && job.detection_log.length > 0 && (
+                <details style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px 14px' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>Deteksi domain sheet ({job.detection_log.length} sheet)</summary>
+                  <div style={{ marginTop: '8px', display: 'grid', gap: '3px' }}>
+                    {job.detection_log.map((entry, i) => {
+                      const isUnknown = entry.includes('(tidak dikenali)')
+                      return (
+                        <div key={i} style={{ fontSize: '12px', fontFamily: 'monospace', color: isUnknown ? 'var(--red, #ef4444)' : 'var(--muted)' }}>
+                          {entry}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {job.detection_log.some(e => e.includes('(tidak dikenali)')) && (
+                    <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--muted)' }}>
+                      Sheet yang tidak dikenali dilewati. Pastikan nama kolom sesuai atau lihat panduan deteksi di bawah.
+                    </p>
+                  )}
+                </details>
+              )}
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button className="primary" onClick={() => onNavigate('graph')}>Buka Graph Explorer <ChevronIcon /></button>
                 <button className="secondary" onClick={() => { setJob(undefined); setError(undefined) }}>Upload lagi</button>

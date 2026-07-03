@@ -106,23 +106,24 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     eq_score = 0
     mo_score = 0
 
-    # Equipment master signals
-    if has('functional_loc', 'functional_location', 'floc'):          eq_score += 4
-    if has('maintplant', 'planning_plant', 'maint_plant'):            eq_score += 3
-    if has('catalog_profile', 'equipment_group', 'object_type'):      eq_score += 3
-    if has('criticallity', 'criticality', 'critical_rank'):           eq_score += 3
-    if has('description_of_technical_object'):                         eq_score += 3
-    if has('equipment', 'tag_number', 'tag_no', 'tag_num'):           eq_score += 2
-    if has('plant_area', 'location', 'plant_section'):                eq_score += 1
+    # Equipment master signals — SAP & Indonesian naming
+    if has('functional_loc', 'functional_location', 'floc', 'lokasi_fungsi', 'functional_loc_no'): eq_score += 4
+    if has('maintplant', 'planning_plant', 'maint_plant', 'pabrik', 'plant_kode'): eq_score += 3
+    if has('catalog_profile', 'equipment_group', 'object_type', 'tipe_equipment', 'jenis_equipment', 'equipment_type', 'object_class'): eq_score += 3
+    if has('criticallity', 'criticality', 'critical_rank', 'kritikalitas', 'tingkat_kritis', 'criticality_rank', 'kelas_kritis'): eq_score += 3
+    if has('description_of_technical_object', 'keterangan_equipment', 'nama_equipment'): eq_score += 3
+    if has('equipment', 'tag_number', 'tag_no', 'tag_num', 'kode_equipment', 'no_equipment', 'equipment_no', 'nomor_equipment', 'nomor_tag', 'tag_alat'): eq_score += 2
+    if has('plant_area', 'location', 'plant_section', 'area', 'area_plant', 'lokasi'): eq_score += 1
+    if has('date_update_data', 'tanggal_update', 'last_update', 'update_date') and not has('order', 'aufnr'): eq_score += 2
 
     # Maintenance order signals
-    if has('order', 'order_number', 'aufnr', 'maint_order', 'order_no'): mo_score += 4
-    if has('work_center', 'main_workcenter', 'arbpl', 'workcenter'):  mo_score += 4
-    if has('order_type', 'auart', 'order_category'):                  mo_score += 3
-    if has('notification', 'notification_no', 'qmnum'):               mo_score += 3
-    if has('system_status', 'user_status', 'sttxt'):                  mo_score += 3
+    if has('order', 'order_number', 'aufnr', 'maint_order', 'order_no', 'nomor_order'): mo_score += 4
+    if has('work_center', 'main_workcenter', 'arbpl', 'workcenter', 'pusat_kerja'):     mo_score += 4
+    if has('order_type', 'auart', 'order_category', 'tipe_order'):                      mo_score += 3
+    if has('notification', 'notification_no', 'qmnum', 'nomor_notifikasi'):             mo_score += 3
+    if has('system_status', 'user_status', 'sttxt', 'status_sistem'):                  mo_score += 3
     if has('actual_start', 'actual_finish', 'basic_start', 'basic_finish', 'gstrp', 'gltrp'): mo_score += 2
-    if has('equipment', 'tag_number', 'tag_no'):                      mo_score += 1
+    if has('equipment', 'tag_number', 'tag_no'):                                         mo_score += 1
 
     if eq_score >= 5 and eq_score > mo_score:
         return 'equipment'
@@ -149,8 +150,11 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
     sheet_l = sheet.lower()
     k = f"{stem} {sheet_l}"
 
-    if "all_ru_equipment" in stem:                                     return "equipment"
-    if stem.startswith(("pt02_", "pt03_")):                           return "maintenance"
+    if any(x in stem for x in ("all_ru_equipment", "equipment_master", "master_equipment",
+                                "daftar_equipment", "daftar_alat", "master_alat",
+                                "equipment_list", "tag_list", "tag_register")):    return "equipment"
+    if "all_ru_equipment" in stem or "equipment_data" in stem:                     return "equipment"
+    if stem.startswith(("pt02_", "pt03_")):                                        return "maintenance"
     if any(x in k for x in ("vw_reportirkapplanactual", "cost_program")) \
             or (any(x in k for x in ("rkap", "irkap")) and "alias_map" not in stem):
         return "rkap"
@@ -1281,6 +1285,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
             "oa_allowance": [], "oa_availability": [], "oa_issue": [], "plo": [],
         }
 
+        detection_log: list[str] = []
         job.phase = "Membaca sheet Excel"
         for path in excel_paths:
             job.message = f"Membaca {path.name}…"
@@ -1289,6 +1294,10 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
                 domain = _detect_domain(filename, sheet, headers)
                 if domain and domain in domain_views:
                     domain_views[domain].append(tname)
+                    detection_log.append(f"{Path(filename).name}/{sheet} → {domain}")
+                else:
+                    detection_log.append(f"{Path(filename).name}/{sheet} → (tidak dikenali)")
+        job.detection_log = detection_log
 
         build_warnings: list[str] = []
 
