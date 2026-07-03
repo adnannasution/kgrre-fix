@@ -261,7 +261,7 @@ export default function App() {
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
-          <Nav icon={<DatabaseIcon />} label="Datasets" active={page === 'datasets'} onClick={() => setPage('datasets')} />
+          <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
         </nav>
         <div className="sidebar-foot">
           <span className="eyebrow">Active dataset</span>
@@ -2467,6 +2467,9 @@ function DataReview({ dataset }: { dataset?: DatasetSummary }) {
 }
 
 function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { datasets: DatasetSummary[]; activeId: string; onActivate: (id: string) => void; onRefresh: () => Promise<void> }) {
+  const [deleting, setDeleting] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
   const rename = async (dataset: DatasetSummary) => {
     const name = window.prompt('Nama dataset baru', dataset.name)
     if (!name) return
@@ -2474,23 +2477,119 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh }: { dataset
     await onRefresh()
   }
   const remove = async (dataset: DatasetSummary) => {
-    if (!window.confirm(`Hapus dataset "${dataset.name}" dan database lokalnya?`)) return
-    await api.deleteDataset(dataset.id)
-    await onRefresh()
+    if (!window.confirm(
+      `Hapus dataset "${dataset.name}"?\n\nSemua node (${format(dataset.node_count)}) dan relasi (${format(dataset.edge_count)}) di knowledge graph akan dihapus permanen.`
+    )) return
+    setDeleting(dataset.id)
+    try {
+      await api.deleteDataset(dataset.id)
+      await onRefresh()
+    } finally {
+      setDeleting(null)
+    }
   }
+
+  const fmtDate = (iso: string) => {
+    try { return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+    catch { return iso }
+  }
+
+  const modeLabel: Record<string, string> = {
+    graph_contract: 'ETL contract',
+    exact_match_fallback: 'Exact match',
+    etl_csv_graph: 'ETL CSV',
+  }
+
   return (
     <section className="stack">
-      <div className="hero-panel compact-hero"><div><span className="eyebrow">Local storage</span><h2>Dataset manager</h2><p>Setiap dataset disimpan sebagai database DuckDB terpisah di workspace aplikasi.</p></div></div>
-      <div className="dataset-grid">
-        {datasets.map((dataset) => <article className={`dataset-card ${dataset.id === activeId ? 'active' : ''}`} key={dataset.id}>
-          <div className="dataset-symbol"><DatabaseIcon /></div>
-          <span className="eyebrow">{dataset.mode.replaceAll('_', ' ')}</span>
-          <h3>{dataset.name}</h3>
-          <p>{dataset.workbooks.length} file · {format(dataset.node_count)} node · {format(dataset.edge_count)} edge</p>
-          <div className="dataset-actions"><button className="primary small" onClick={() => onActivate(dataset.id)}>{dataset.id === activeId ? 'Active' : 'Open'}</button><button className="secondary small" onClick={() => void rename(dataset)}>Rename</button><button className="icon-button danger" onClick={() => void remove(dataset)}><TrashIcon /></button></div>
-        </article>)}
+      <div className="hero-panel compact-hero">
+        <div>
+          <span className="eyebrow">Knowledge graph</span>
+          <h2>Daftar dataset</h2>
+          <p>Setiap dataset menyimpan node dan relasi knowledge graph di PostgreSQL. Menghapus dataset menghapus seluruh datanya secara permanen.</p>
+        </div>
+        <div className="hero-stat">
+          <span className="hero-stat-num">{datasets.length}</span>
+          <span className="eyebrow">dataset tersedia</span>
+        </div>
       </div>
+
       {!datasets.length && <NoDataset />}
+
+      {datasets.length > 0 && (
+        <div className="dm-table-wrap">
+          <table className="dm-table">
+            <thead>
+              <tr>
+                <th>Nama dataset</th>
+                <th>Mode</th>
+                <th className="num">Node</th>
+                <th className="num">Relasi</th>
+                <th className="num">File</th>
+                <th>Dibuat</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {datasets.map((dataset) => (
+                <>
+                  <tr key={dataset.id} className={`dm-row ${dataset.id === activeId ? 'dm-active' : ''}`}>
+                    <td>
+                      <button className="dm-name-btn" onClick={() => setExpanded(expanded === dataset.id ? null : dataset.id)}>
+                        <span className="dm-chevron">{expanded === dataset.id ? '▾' : '▸'}</span>
+                        <span>{dataset.name}</span>
+                        {dataset.id === activeId && <span className="dm-badge">Aktif</span>}
+                      </button>
+                    </td>
+                    <td><span className="dm-mode">{modeLabel[dataset.mode] ?? dataset.mode}</span></td>
+                    <td className="num">{format(dataset.node_count)}</td>
+                    <td className="num">{format(dataset.edge_count)}</td>
+                    <td className="num">{dataset.workbooks.length}</td>
+                    <td className="dm-date">{fmtDate(dataset.created_at)}</td>
+                    <td>
+                      <div className="dm-actions">
+                        <button className="primary small" onClick={() => onActivate(dataset.id)}>
+                          {dataset.id === activeId ? 'Aktif' : 'Buka'}
+                        </button>
+                        <button className="secondary small" onClick={() => void rename(dataset)}>Rename</button>
+                        <button
+                          className="icon-button danger"
+                          onClick={() => void remove(dataset)}
+                          disabled={deleting === dataset.id}
+                          title="Hapus dataset dan semua node-nya"
+                        >
+                          {deleting === dataset.id ? '…' : <TrashIcon />}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded === dataset.id && (
+                    <tr key={`${dataset.id}-files`} className="dm-files-row">
+                      <td colSpan={7}>
+                        <div className="dm-files">
+                          <span className="eyebrow">File yang diimpor ({dataset.workbooks.length})</span>
+                          {dataset.workbooks.length === 0
+                            ? <span className="dm-no-files">Tidak ada info file tercatat.</span>
+                            : (
+                              <ul className="dm-file-list">
+                                {dataset.workbooks.map((wb, i) => (
+                                  <li key={i} className="dm-file-item">
+                                    <span className="dm-file-icon">📄</span>
+                                    <span className="dm-file-name">{wb}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   )
 }
@@ -2576,7 +2675,7 @@ const depthDomainLabels: Record<string, string> = {
 }
 
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Dataset manager' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset' })[page]
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }
