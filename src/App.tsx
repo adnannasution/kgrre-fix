@@ -32,7 +32,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'etl' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets'
+type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -255,7 +255,6 @@ export default function App() {
         <nav>
           <Nav icon={<GridIcon />} label="Overview" active={page === 'overview'} onClick={() => setPage('overview')} />
           <Nav icon={<UploadIcon />} label="Import Center" active={page === 'import'} onClick={() => setPage('import')} />
-          <Nav icon={<UploadIcon />} label="Data Mentah" active={page === 'etl'} onClick={() => setPage('etl')} />
           <Nav icon={<DatabaseIcon />} label="Executive RU" active={page === 'executive'} onClick={() => setPage('executive')} />
           <Nav icon={<GridIcon />} label="Reliability Insight" active={page === 'insight'} onClick={() => setPage('insight')} />
           <Nav icon={<EquipmentIcon />} label="Equipment 360" active={page === 'equipment'} onClick={() => setPage('equipment')} />
@@ -311,9 +310,9 @@ export default function App() {
             onZip={startZipImport}
             onCancel={() => job && void api.cancelImport(job.id)}
             onFolder={async (path) => setScan(await api.updateFolder(path))}
+            onNavigate={setPage}
           />
         )}
-        {page === 'etl' && <EtlUploadPage onNavigate={setPage} />}
         {page === 'executive' && <ExecutiveDashboard dataset={active} />}
         {page === 'insight' && <ReliabilityInsightPage dataset={active} onNavigate={setPage} />}
         {page === 'equipment' && <Equipment360 dataset={active} />}
@@ -387,8 +386,7 @@ const ETL_PHASES: Record<string, number> = {
   'Membangun node Readiness': 82, 'Menulis output CSV': 88, 'Import ke database': 90,
 }
 
-function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
-  const [name, setName] = useState(`KG ${new Date().toLocaleDateString('id-ID')}`)
+function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNavigate: (p: Page) => void }) {
   const [files, setFiles] = useState<File[]>([])
   const [job, setJob] = useState<ImportJob>()
   const [uploading, setUploading] = useState(false)
@@ -412,7 +410,7 @@ function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
     setError(undefined)
     setUploading(true)
     try {
-      const j = await api.etlUpload(files, name)
+      const j = await api.etlUpload(files, datasetName)
       setJob(j)
       setFiles([])
     } catch (e) {
@@ -422,24 +420,19 @@ function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
     }
   }
 
-  const phasePct = job ? (ETL_PHASES[job.phase] ?? job.progress) : 0
   const isRunning = job?.status === 'queued' || job?.status === 'running'
   const isDone = job?.status === 'completed'
   const isFailed = job?.status === 'failed'
 
   return (
-    <section className="stack">
-      <div className="panel-heading">
-        <h1>Upload Data Mentah</h1>
-        <p>Upload file Excel SAP/maintenance langsung — ETL berjalan otomatis dan menghasilkan knowledge graph siap pakai.</p>
-      </div>
+    <>
 
       {/* Form upload */}
       {!isRunning && !isDone && (
         <section className="panel import-action" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '12px' }}>
-          <div style={{ display: 'grid', gap: '8px' }}>
-            <label htmlFor="etl-name">Nama dataset</label>
-            <input id="etl-name" value={name} onChange={e => setName(e.target.value)} />
+          <div>
+            <h2 style={{ margin: '0 0 4px' }}>Upload Data Mentah (Excel)</h2>
+            <p style={{ margin: 0, color: 'var(--muted)', fontSize: 'var(--fs-xs)' }}>Upload file Excel SAP/maintenance langsung — ETL otomatis menghasilkan knowledge graph siap pakai.</p>
           </div>
           <div style={{ display: 'grid', gap: '8px' }}>
             <label htmlFor="etl-files">Pilih file Excel (bisa multi-file sekaligus)</label>
@@ -566,7 +559,7 @@ function EtlUploadPage({ onNavigate }: { onNavigate: (p: Page) => void }) {
           )}
         </section>
       )}
-    </section>
+    </>
   )
 }
 
@@ -723,7 +716,7 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
 }
 
 function ImportCenter({
-  scan, job, busy, onScan, onStart, onZip, onCancel, onFolder,
+  scan, job, busy, onScan, onStart, onZip, onCancel, onFolder, onNavigate,
 }: {
   scan?: FolderScan
   job?: ImportJob
@@ -733,6 +726,7 @@ function ImportCenter({
   onZip: (file: File, name: string) => Promise<void>
   onCancel: () => void
   onFolder: (path: string) => Promise<void>
+  onNavigate: (p: Page) => void
 }) {
   const [name, setName] = useState(`KG ${new Date().toLocaleDateString('id-ID')}`)
   const [folder, setFolder] = useState(scan?.folder ?? '')
@@ -826,6 +820,8 @@ function ImportCenter({
         <summary>Folder settings</summary>
         <div><input value={folder} onChange={(event) => setFolder(event.target.value)} /><button className="secondary" onClick={() => void onFolder(folder)}>Simpan path</button></div>
       </details>
+
+      <EtlUploadPanel name={name} onNavigate={onNavigate} />
     </section>
   )
 }
@@ -2577,7 +2573,7 @@ const depthDomainLabels: Record<string, string> = {
 }
 
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', etl: 'Data Mentah', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Dataset manager' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Dataset manager' })[page]
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }
