@@ -79,7 +79,13 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
         return 'reliability'
 
     # RKAP — cost_program/cost_element spesifik
-    if has('cost_program', 'cost_element', 'cost_center'):
+    # cost_center saja tidak cukup — equipment master SAP juga punya kolom ini;
+    # butuh minimal satu sinyal RKAP yang lebih spesifik
+    if has('cost_program', 'cost_element') or (has('cost_center') and not has(
+            'functional_loc', 'functional_location', 'floc',
+            'catalog_profile', 'equipment_group', 'object_type',
+            'description_of_technical_object', 'criticallity', 'criticality',
+            'maintplant', 'maint_plant', 'planning_plant')):
         return 'rkap'
     if has_sub('rkap') or has_sub('irkap'):
         return 'rkap'
@@ -384,9 +390,15 @@ def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
                 ) AS refinery_unit,
                 nullif(trim({_cs(c, 'functional_loc','functional_location','floc')}), '') AS functional_location,
                 nullif(trim({_cs(c, 'catalog_profile','equipment_group','object_type')}), '') AS equipment_group,
+                nullif(trim({_cs(c, 'equip_category','equipcategory','equipment_category')}), '') AS equip_category,
                 nullif(trim({_cs(c, 'description_of_technical_object','description','equipment_name')}), '') AS description,
                 nullif(trim({_cs(c, 'criticallity','criticality','critical_rank')}), '') AS criticallity,
                 nullif(trim({_cs(c, 'location','plant_area','plant_section')}), '') AS plant_area,
+                nullif(trim({_cs(c, 'manufacturer_of_asset','manufacturer','pabrikan')}), '') AS manufacturer,
+                nullif(trim({_cs(c, 'model_type','model','type','tipe')}), '') AS model_type,
+                nullif(trim({_cs(c, 'wbs_element','wbs')}), '') AS wbs_element,
+                nullif(trim({_cs(c, 'cost_center')}), '') AS cost_center,
+                nullif(trim({_cs(c, 'planner_group','planner')}), '') AS planner_group,
                 nullif(trim({_cs(c, 'date_update_data','last_update','update_date')}), '') AS date_update_data,
                 _input_source_file AS source_file,
                 _input_source_sheet AS source_sheet,
@@ -422,9 +434,15 @@ def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
                    'plant', plant,
                    'functional_location', functional_location,
                    'equipment_group', equipment_group,
+                   'equip_category', equip_category,
                    'description', description,
                    'criticallity', criticallity,
                    'plant_area', plant_area,
+                   'manufacturer', manufacturer,
+                   'model_type', model_type,
+                   'wbs_element', wbs_element,
+                   'cost_center', cost_center,
+                   'planner_group', planner_group,
                    'derived_ru_normalized', refinery_unit,
                    'derived_equipment_code_compact', norm_code(equipment_code_raw)
                ),
@@ -1311,8 +1329,11 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
                 equipment_id VARCHAR, equipment_code_normalized VARCHAR,
                 equipment_code_raw VARCHAR, refinery_unit VARCHAR,
                 plant VARCHAR, functional_location VARCHAR,
-                equipment_group VARCHAR, description VARCHAR,
-                criticallity VARCHAR, plant_area VARCHAR,
+                equipment_group VARCHAR, equip_category VARCHAR,
+                description VARCHAR, criticallity VARCHAR,
+                plant_area VARCHAR, manufacturer VARCHAR,
+                model_type VARCHAR, wbs_element VARCHAR,
+                cost_center VARCHAR, planner_group VARCHAR,
                 date_update_data VARCHAR, source_file VARCHAR,
                 source_sheet VARCHAR, source_row INTEGER,
                 source_record_id VARCHAR, rn INTEGER
