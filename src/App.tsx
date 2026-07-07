@@ -312,6 +312,8 @@ export default function App() {
             onCancel={() => job && void api.cancelImport(job.id)}
             onFolder={async (path) => setScan(await api.updateFolder(path))}
             onNavigate={setPage}
+            datasets={datasets}
+            onRefreshDatasets={refreshDatasets}
           />
         )}
         {page === 'executive' && <ExecutiveDashboard dataset={active} />}
@@ -391,12 +393,14 @@ const ETL_PHASES: Record<string, number> = {
 
 const ETL_CHUNK_SIZE = 4 * 1024 * 1024 // 4 MB per chunk
 
-function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNavigate: (p: Page) => void }) {
+function EtlUploadPanel({ name: datasetName, onNavigate, datasets, onRefreshDatasets }: { name: string; onNavigate: (p: Page) => void; datasets: DatasetSummary[]; onRefreshDatasets: () => Promise<void> }) {
   const [files, setFiles] = useState<File[]>([])
   const [job, setJob] = useState<ImportJob>()
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string>()
+  // Tujuan upload: dataset baru atau tambah ke dataset yang sudah ada
+  const [target, setTarget] = useState<string>('__new__')
 
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.status)) return
@@ -411,6 +415,8 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
     if (e.target.files) setFiles(Array.from(e.target.files))
   }
 
+  const isAppend = target !== '__new__'
+
   const startEtl = async () => {
     if (!files.length) return
     setError(undefined)
@@ -424,10 +430,12 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
       }))
       const totalChunks = entries.reduce((s, e) => s + e.total_chunks, 0)
       let doneChunks = 0
+      const targetDataset = isAppend ? datasets.find(d => d.id === target) : undefined
       const { upload_id } = await api.initChunkedUpload(
-        datasetName,
+        isAppend ? (targetDataset?.name ?? datasetName) : datasetName,
         entries.map(e => ({ name: e.name, total_chunks: e.total_chunks })),
-        'etl',
+        isAppend ? 'etl_append' : 'etl',
+        isAppend ? target : undefined,
       )
       for (const entry of entries) {
         for (let i = 0; i < entry.total_chunks; i++) {
@@ -440,6 +448,7 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
       const j = await api.commitChunkedUpload(upload_id)
       setJob(j)
       setFiles([])
+      void onRefreshDatasets()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload gagal.')
     } finally {
@@ -461,6 +470,22 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
           <div>
             <h2 style={{ margin: '0 0 4px' }}>Upload Data Mentah (Excel)</h2>
             <p style={{ margin: 0, color: 'var(--muted)', fontSize: 'var(--fs-xs)' }}>Upload file Excel SAP/maintenance langsung — ETL otomatis menghasilkan knowledge graph siap pakai.</p>
+          </div>
+          <div style={{ display: 'grid', gap: '6px' }}>
+            <label htmlFor="etl-target">Tujuan upload</label>
+            <select id="etl-target" value={target} onChange={e => setTarget(e.target.value)} disabled={uploading}>
+              <option value="__new__">➕ Buat dataset baru — {datasetName}</option>
+              {datasets.length > 0 && <optgroup label="Tambahkan ke dataset yang sudah ada (gabung)">
+                {datasets.map(d => (
+                  <option key={d.id} value={d.id}>{d.name} — {d.node_count.toLocaleString('id-ID')} node</option>
+                ))}
+              </optgroup>}
+            </select>
+            <p style={{ margin: 0, color: 'var(--muted)', fontSize: '12px' }}>
+              {isAppend
+                ? 'Mode gabung: file domain ini ditambahkan tanpa menghapus data lama. Setelah semua file diupload, buka Kelola Dataset → 🔗 Rebuild Relasi.'
+                : 'Membuat dataset baru dari file yang dipilih. Untuk menambah domain lain nanti, upload lagi lalu pilih dataset ini di "Tujuan upload".'}
+            </p>
           </div>
           <div style={{ display: 'grid', gap: '8px' }}>
             <label htmlFor="etl-files">Pilih file Excel (bisa multi-file sekaligus)</label>
@@ -485,7 +510,7 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
             </div>
           )}
           <button className="primary large" disabled={!files.length || uploading} onClick={() => void startEtl()}>
-            {uploading ? 'Mengunggah…' : 'Proses ETL & Buat Knowledge Graph'} <ChevronIcon />
+            {uploading ? 'Mengunggah…' : isAppend ? 'Proses ETL & Tambahkan ke Dataset' : 'Proses ETL & Buat Knowledge Graph'} <ChevronIcon />
           </button>
         </section>
       )}
@@ -755,6 +780,7 @@ function ChunkedUploadPanel({ name, onJobStart, disabled }: { name: string; onJo
 
 function ImportCenter({
   scan, job, busy, onScan, onStart, onZip, onCancel, onFolder, onNavigate,
+  datasets, onRefreshDatasets,
 }: {
   scan?: FolderScan
   job?: ImportJob
@@ -765,6 +791,8 @@ function ImportCenter({
   onCancel: () => void
   onFolder: (path: string) => Promise<void>
   onNavigate: (p: Page) => void
+  datasets: DatasetSummary[]
+  onRefreshDatasets: () => Promise<void>
 }) {
   const [name, setName] = useState(`KG ${new Date().toLocaleDateString('id-ID')}`)
   const [folder, setFolder] = useState(scan?.folder ?? '')
@@ -859,7 +887,7 @@ function ImportCenter({
         <div><input value={folder} onChange={(event) => setFolder(event.target.value)} /><button className="secondary" onClick={() => void onFolder(folder)}>Simpan path</button></div>
       </details>
 
-      <EtlUploadPanel name={name} onNavigate={onNavigate} />
+      <EtlUploadPanel name={name} onNavigate={onNavigate} datasets={datasets} onRefreshDatasets={onRefreshDatasets} />
     </section>
   )
 }
