@@ -416,6 +416,11 @@ function EtlUploadPanel({ name: datasetName, onNavigate, datasets, onRefreshData
   }
 
   const isAppend = target !== '__new__'
+  // Peringatkan kalau membuat dataset "baru" dengan nama yang sudah dipakai — penyebab
+  // munculnya dua dataset kembar. Cocokkan case-insensitive.
+  const nameCollision = !isAppend && datasets.some(
+    d => d.name.trim().toLowerCase() === datasetName.trim().toLowerCase(),
+  )
 
   const startEtl = async () => {
     if (!files.length) return
@@ -486,6 +491,13 @@ function EtlUploadPanel({ name: datasetName, onNavigate, datasets, onRefreshData
                 ? 'Mode gabung: file domain ini ditambahkan tanpa menghapus data lama. Setelah semua file diupload, buka Kelola Dataset → 🔗 Rebuild Relasi.'
                 : 'Membuat dataset baru dari file yang dipilih. Untuk menambah domain lain nanti, upload lagi lalu pilih dataset ini di "Tujuan upload".'}
             </p>
+            {nameCollision && (
+              <p style={{ margin: 0, color: 'var(--warning, #b45309)', fontSize: '12px', fontWeight: 600 }}>
+                ⚠️ Sudah ada dataset bernama sama. Kalau ini lanjutan data yang sama, sebaiknya pilih
+                dataset itu di "Tambahkan ke dataset yang sudah ada" — bukan buat baru — supaya tidak
+                muncul dua dataset kembar.
+              </p>
+            )}
           </div>
           <div style={{ display: 'grid', gap: '8px' }}>
             <label htmlFor="etl-files">Pilih file Excel (bisa multi-file sekaligus)</label>
@@ -794,7 +806,12 @@ function ImportCenter({
   datasets: DatasetSummary[]
   onRefreshDatasets: () => Promise<void>
 }) {
-  const [name, setName] = useState(`KG ${new Date().toLocaleDateString('id-ID')}`)
+  const [name, setName] = useState(() => {
+    const now = new Date()
+    const tgl = now.toLocaleDateString('id-ID')
+    const jam = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace(/[.:]/g, '.')
+    return `KG Kilang ${tgl} ${jam}`
+  })
   const [folder, setFolder] = useState(scan?.folder ?? '')
   const [zipFile, setZipFile] = useState<File>()
   const [chunkedJob, setChunkedJob] = useState<ImportJob>()
