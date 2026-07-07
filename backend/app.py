@@ -491,6 +491,25 @@ def rebuild_relationships(dataset_id: str):
             ON CONFLICT DO NOTHING
         """)
 
+        # 2d. Maintenance Order → Notification (order_raw cocok dgn notification_raw order lain)
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(o.node_id || '|MAINTENANCE_ORDER_HAS_NOTIFICATION|' || n.node_id),
+                o.node_id, n.node_id, 'MAINTENANCE_ORDER_HAS_NOTIFICATION',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node o, kg_node n
+            WHERE o.node_type = 'maintenance_order' AND n.node_type = 'maintenance_order'
+              AND o.node_id != n.node_id
+              AND o.properties_json->>'refinery_unit' = n.properties_json->>'refinery_unit'
+              AND {_norm("o.properties_json->>'notification_raw'")}
+                = {_norm("n.properties_json->>'order_raw'")}
+              AND {_norm("o.properties_json->>'notification_raw'")} != ''
+            ON CONFLICT DO NOTHING
+        """)
+
         # RU → domain nodes (matching by refinery_unit label)
         for domain_type, rel_type in [
             ('rkap_program',            'REFINERY_UNIT_HAS_RKAP_PROGRAM'),
