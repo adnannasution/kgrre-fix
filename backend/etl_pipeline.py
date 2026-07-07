@@ -123,7 +123,7 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
 
     # Maintenance order signals
     if has('order', 'order_number', 'aufnr', 'maint_order', 'order_no'): mo_score += 4
-    if has('work_center', 'main_workcenter', 'arbpl', 'workcenter'):  mo_score += 4
+    if has('work_center', 'main_workcenter', 'arbpl', 'workcenter', 'main_workctr'):  mo_score += 4
     if has('order_type', 'auart', 'order_category'):                  mo_score += 3
     if has('notification', 'notification_no', 'qmnum'):               mo_score += 3
     if has('system_status', 'user_status', 'sttxt'):                  mo_score += 3
@@ -470,22 +470,25 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     ord_expr = _cs(c, 'order','order_no','order_number','aufnr','maint_order', cast=True, default='NULL')
+    notif_expr = _cs(c, 'notification','notif','qmnum', cast=True, default='NULL')
+    # Notifikasi SAP tanpa Order tetap dimasukkan dengan order_raw dari nomor notifikasi
+    primary_id_expr = f"coalesce({ord_expr}, {notif_expr})"
     ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant','refineryunit', default='NULL')})"
     con.execute(f"""
         CREATE TABLE maintenance_stage AS
         SELECT
             {ord_expr} AS order_raw,
-            {_cs(c, 'notification','notif','qmnum', cast=True)} AS notification_raw,
-            norm_code({ord_expr}) AS order_code,
+            {notif_expr} AS notification_raw,
+            coalesce(norm_code({ord_expr}), norm_code({notif_expr})) AS order_code,
             {_cs(c, 'description','kurztext','short_text','order_description')} AS order_desc,
-            {_cs(c, 'order_type','auart','order_category')} AS order_type,
+            {_cs(c, 'order_type','auart','order_category','notifictn_type','notif_type')} AS order_type,
             {_cs(c, 'priority','priok')} AS priority,
             {_cs(c, 'user_status','txt04','ustatus')} AS user_status,
             {_cs(c, 'system_status','sttxt')} AS system_status,
-            {_cs(c, 'reference_date','gstrp','basic_start', cast=True)} AS reference_date,
+            {_cs(c, 'reference_date','gstrp','basic_start','req_start','notif_date', cast=True)} AS reference_date,
             {_cs(c, 'total_planned_costs','geplk','planned_cost', cast=True, default="'0'")} AS planned_cost,
             {_cs(c, 'total_actual_costs','istko','actual_cost', cast=True, default="'0'")} AS actual_cost,
-            {_cs(c, 'main_work_center','main_workcenter','arbpl','work_center','workcenter')} AS work_center,
+            {_cs(c, 'main_work_center','main_workcenter','arbpl','work_center','workcenter','main_workctr')} AS work_center,
             {_cs(c, 'equipment','tag_number','tag_no','equnr')} AS equipment_raw,
             coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
@@ -493,7 +496,7 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
             _source_row AS source_row,
             'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
         FROM ({union_sql})
-        WHERE {ord_expr} IS NOT NULL
+        WHERE {primary_id_expr} IS NOT NULL
     """)
 
     # Tambah derived columns
