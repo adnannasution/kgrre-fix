@@ -67,7 +67,7 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     # OA Availability
     if has('actual_target') and has('value_perc', 'month_update', 'bulan'):
         return 'oa_availability'
-    if has('operational_availability') or (has_sub('oa') and has('value_perc', 'actual_target')):
+    if has('operational_availability') or (has('oa_value', 'oa_target', 'oa_actual') and has('value_perc', 'actual_target')):
         return 'oa_availability'
 
     # Reliability — mtbf/mttr/running hours sangat spesifik
@@ -530,7 +530,8 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
                    'derived_actual_cost', actual_cost,
                    'work_center', work_center,
                    'derived_is_open_order',
-                       CASE WHEN user_status ILIKE '%WAMA%' OR user_status ILIKE '%WAMA%'
+                       CASE WHEN user_status ILIKE '%WAMA%' OR user_status ILIKE '%WASR%'
+                                 OR system_status ILIKE '%REL%' OR system_status ILIKE '%PCNF%'
                             THEN 'true' ELSE 'false' END,
                    'derived_status_bucket',
                        CASE WHEN user_status ILIKE '%WAMA%' THEN 'WAMA'
@@ -576,7 +577,7 @@ def _build_rkap_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
         SELECT
             {_cs(c, 'noprogram','no_program','program_no','programkerja','program_kerja','nama_program','program_name')} AS program_no,
             {_cs(c, 'programkerja','program_kerja','nama_program','program_name','noprogram','no_program')} AS program_name,
-            {_cs(c, 'equipment','tag_number','tag_no')} AS equipment_raw,
+            {_cs(c, 'equipment','tag_number','tag_no','equnr')} AS equipment_raw,
             {_cs(c, 'katergorirkap','kategori_rkap','kategori')} AS kategori,
             {_cs(c, 'kelompokbiaya','kelompok_biaya')} AS kelompok_biaya,
             {_cs(c, 'disiplin','discipline')} AS disiplin,
@@ -689,7 +690,7 @@ def _build_reliability_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
         return
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
-    eq_expr = _cs(c, 'equipment','tag_number','tag_no')
+    eq_expr = _cs(c, 'equipment','tag_number','tag_no','equnr')
     ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','refineryunit', default='NULL')})"
     con.execute(f"""
         CREATE TABLE reliability_stage AS
@@ -760,7 +761,7 @@ def _build_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         return
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
-    eq_expr = _cs(c, 'tag_no_ln','tag_number','tag_no','equipment')
+    eq_expr = _cs(c, 'tag_no_ln','tag_number','tag_no','equipment','equnr')
     ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant', default='NULL')})"
     con.execute(f"""
         CREATE TABLE inspection_stage AS
@@ -831,7 +832,7 @@ def _build_icu_issue_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
     con.execute(f"""
         CREATE TABLE icu_stage AS
         SELECT
-            {_cs(c, 'tag_no','tag_number','equipment')} AS equipment_raw,
+            {_cs(c, 'tag_no','tag_number','equipment','equnr')} AS equipment_raw,
             {issue_expr} AS issue_text,
             {_cs(c, 'icu_status','status')} AS icu_status,
             {_cs(c, 'report_date','tanggal', cast=True)} AS report_date,
@@ -1179,8 +1180,7 @@ def _build_plo_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
         FROM node_raw n
         JOIN plo_stage p ON n.business_key = p.nomor_ijin AND n.node_type = 'plo_permit'
         JOIN ru_reference r
-          ON norm_text(SPLIT_PART(p.refinery_unit, ' ', 1) || ' ' || SPLIT_PART(p.refinery_unit, ' ', 2))
-           = norm_text(r.refinery_unit)
+          ON ru_normalize(p.refinery_unit) = r.refinery_unit
     """)
 
 
@@ -1360,8 +1360,8 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         _safe("Inspection", _build_inspection_nodes, con, domain_views["inspection"])
 
         job.progress = 68
-        job.phase = "Membangun node ICU Issue"
-        _safe("ICU Issue", _build_icu_issue_nodes, con, domain_views["icu_issue"])
+        job.phase = "Membangun node ICU/Org Issue"
+        _safe("ICU Issue", _build_icu_issue_nodes, con, domain_views["icu_issue"] + domain_views["org_issue"])
 
         job.progress = 74
         job.phase = "Membangun node Readiness"
