@@ -450,6 +450,77 @@ def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
         FROM equipment_master
     """)
 
+    # Buat node Plant dan Functional Location dari equipment_master
+    con.execute("""
+        INSERT INTO node_raw (node_id, node_type, business_key, label, domain, properties_json)
+        SELECT DISTINCT
+            'node_plant_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || plant),
+            'plant', plant, plant, 'asset',
+            json_object('plant', plant, 'refinery_unit', refinery_unit)
+        FROM equipment_master WHERE plant IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO node_raw (node_id, node_type, business_key, label, domain, properties_json)
+        SELECT DISTINCT
+            'node_floc_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || functional_location),
+            'functional_location', functional_location, functional_location, 'asset',
+            json_object('functional_location', functional_location, 'refinery_unit', refinery_unit, 'plant', plant)
+        FROM equipment_master WHERE functional_location IS NOT NULL
+    """)
+
+    # RU → Plant → FLoc → Equipment hierarki
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json, source_file,
+            source_sheet, source_row, source_record_id)
+        SELECT r.refinery_unit_id,
+               'node_plant_' || md5(coalesce(e.refinery_unit,'UNKNOWN') || '|' || e.plant),
+               'REFINERY_UNIT_HAS_PLANT', 'asset', 1.0, 'plant_mapping', false,
+               json_object('plant', e.plant), e.source_file, e.source_sheet, e.source_row, e.source_record_id
+        FROM equipment_master e
+        JOIN ru_reference r ON e.refinery_unit = r.refinery_unit
+        WHERE e.plant IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json, source_file,
+            source_sheet, source_row, source_record_id)
+        SELECT
+            'node_plant_' || md5(coalesce(e.refinery_unit,'UNKNOWN') || '|' || e.plant),
+            'node_floc_' || md5(coalesce(e.refinery_unit,'UNKNOWN') || '|' || e.functional_location),
+            'PLANT_HAS_FUNCTIONAL_LOCATION', 'asset', 1.0, 'floc_mapping', false,
+            json_object('functional_location', e.functional_location),
+            e.source_file, e.source_sheet, e.source_row, e.source_record_id
+        FROM equipment_master e
+        WHERE e.plant IS NOT NULL AND e.functional_location IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json, source_file,
+            source_sheet, source_row, source_record_id)
+        SELECT
+            'node_floc_' || md5(coalesce(e.refinery_unit,'UNKNOWN') || '|' || e.functional_location),
+            e.equipment_id,
+            'FUNCTIONAL_LOCATION_HAS_EQUIPMENT', 'asset', 1.0, 'floc_mapping', false,
+            json_object('equipment', e.equipment_code_raw),
+            e.source_file, e.source_sheet, e.source_row, e.source_record_id
+        FROM equipment_master e
+        WHERE e.functional_location IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json, source_file,
+            source_sheet, source_row, source_record_id)
+        SELECT
+            'node_plant_' || md5(coalesce(e.refinery_unit,'UNKNOWN') || '|' || e.plant),
+            e.equipment_id,
+            'PLANT_HAS_EQUIPMENT', 'asset', 1.0, 'plant_mapping', false,
+            json_object('plant', e.plant),
+            e.source_file, e.source_sheet, e.source_row, e.source_record_id
+        FROM equipment_master e
+        WHERE e.plant IS NOT NULL
+    """)
+
     # RU → equipment edges
     con.execute("""
         INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
@@ -554,6 +625,37 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
                json_object('match_token', equipment_raw, 'source_ru', refinery_unit),
                source_file, source_sheet, source_row, source_record_id
         FROM maintenance_stage WHERE equipment_id IS NOT NULL AND order_id IS NOT NULL
+    """)
+
+    # EQUIPMENT_HAS_NOTIFICATION (baris notifikasi tanpa order, atau notif_raw ada)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, order_id, 'EQUIPMENT_HAS_NOTIFICATION',
+               'maintenance', 0.9, 'equipment_notification', false,
+               json_object('notification', notification_raw, 'source_ru', refinery_unit),
+               source_file, source_sheet, source_row, source_record_id
+        FROM maintenance_stage
+        WHERE equipment_id IS NOT NULL AND order_id IS NOT NULL
+          AND notification_raw IS NOT NULL AND order_raw IS NULL
+    """)
+
+    # MAINTENANCE_ORDER_HAS_NOTIFICATION (order punya nomor notifikasi)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT o.order_id, n.order_id, 'MAINTENANCE_ORDER_HAS_NOTIFICATION',
+               'maintenance', 1.0, 'order_notif_link', false,
+               json_object('notification', n.notification_raw),
+               n.source_file, n.source_sheet, n.source_row, n.source_record_id
+        FROM maintenance_stage n
+        JOIN maintenance_stage o
+          ON norm_code(n.order_raw) = norm_code(o.notification_raw)
+         AND n.refinery_unit = o.refinery_unit
+        WHERE n.order_id IS NOT NULL AND o.order_id IS NOT NULL
+          AND n.order_id != o.order_id
     """)
 
     # Unmatched equipment di maintenance

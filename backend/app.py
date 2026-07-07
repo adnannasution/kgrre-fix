@@ -418,9 +418,83 @@ def rebuild_relationships(dataset_id: str):
                 ON CONFLICT DO NOTHING
             """)
 
+        # 2b. Plant / FLoc hierarki dari equipment master
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(ru.node_id || '|REFINERY_UNIT_HAS_PLANT|' || pl.node_id),
+                ru.node_id, pl.node_id, 'REFINERY_UNIT_HAS_PLANT',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node ru, kg_node pl
+            WHERE ru.node_type = 'refinery_unit' AND pl.node_type = 'plant'
+              AND ru.label = pl.properties_json->>'refinery_unit'
+            ON CONFLICT DO NOTHING
+        """)
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(pl.node_id || '|PLANT_HAS_EQUIPMENT|' || eq.node_id),
+                pl.node_id, eq.node_id, 'PLANT_HAS_EQUIPMENT',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node pl, kg_node eq
+            WHERE pl.node_type = 'plant' AND eq.node_type = 'equipment'
+              AND pl.label = eq.properties_json->>'plant'
+            ON CONFLICT DO NOTHING
+        """)
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(pl.node_id || '|PLANT_HAS_FUNCTIONAL_LOCATION|' || fl.node_id),
+                pl.node_id, fl.node_id, 'PLANT_HAS_FUNCTIONAL_LOCATION',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node pl, kg_node fl
+            WHERE pl.node_type = 'plant' AND fl.node_type = 'functional_location'
+              AND pl.label = fl.properties_json->>'plant'
+            ON CONFLICT DO NOTHING
+        """)
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(fl.node_id || '|FUNCTIONAL_LOCATION_HAS_EQUIPMENT|' || eq.node_id),
+                fl.node_id, eq.node_id, 'FUNCTIONAL_LOCATION_HAS_EQUIPMENT',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node fl, kg_node eq
+            WHERE fl.node_type = 'functional_location' AND eq.node_type = 'equipment'
+              AND fl.label = eq.properties_json->>'functional_location'
+            ON CONFLICT DO NOTHING
+        """)
+
+        # 2c. Notifikasi → Equipment
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_NOTIFICATION|' || mo.node_id),
+                eq.node_id, mo.node_id, 'EQUIPMENT_HAS_NOTIFICATION',
+                '{{}}'::jsonb, false, 0.9
+            FROM kg_node eq, kg_node mo
+            WHERE eq.node_type = 'equipment' AND mo.node_type = 'maintenance_order'
+              AND eq.properties_json->>'refinery_unit' = mo.properties_json->>'refinery_unit'
+              AND {_norm("eq.properties_json->>'equipment_code_raw'")}
+                = {_norm("mo.properties_json->>'equipment_raw'")}
+              AND mo.properties_json->>'order_raw' IS NULL
+              AND mo.properties_json->>'notification_raw' IS NOT NULL
+            ON CONFLICT DO NOTHING
+        """)
+
         # RU → domain nodes (matching by refinery_unit label)
         for domain_type, rel_type in [
             ('rkap_program',            'REFINERY_UNIT_HAS_RKAP_PROGRAM'),
+            ('maintenance_order',        'REFINERY_UNIT_HAS_MAINTENANCE_ORDER'),
             ('equipment_issue',         'REFINERY_UNIT_HAS_ISSUE'),
             ('readiness_record',        'REFINERY_UNIT_HAS_READINESS_RECORD'),
             ('oa_availability',         'REFINERY_UNIT_HAS_OA_AVAILABILITY'),
