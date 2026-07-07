@@ -58,6 +58,44 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('target_closed', 'tanggal_target') and has('mitigation') and has('issue', 'deskripsi_issue'):
         return 'icu_issue'
 
+    # ATG — tag_no_tangki/tag_no_atg/status_atg sangat spesifik
+    if has('tag_no_tangki', 'tag_no_atg') or has('status_atg', 'status_interkoneksi_atg'):
+        return 'atg'
+    if has('atg_eksisting') or (has_sub('atg') and has('program_2024', 'prokja')):
+        return 'atg_program'
+
+    # Pipeline inspection — beda dari inspection biasa: ada thickness measurement
+    if has('last_measured_thickness', 'rem_life_years') or (has('fluida_service') and has('from_location', 'to_location')):
+        return 'pipeline_inspection'
+
+    # Power & Steam — status_n0 harus dicek SEBELUM readiness (yang juga punya status_operation)
+    if has('status_n0') and has('kapasitas_max', 'average_actual'):
+        return 'power_steam'
+
+    # Monitoring Operasi — type_limitasi sangat spesifik
+    if has('type_limitasi_process', 'limitasi_alert_process') or has('target_sts', 'limitasi_alert_sts'):
+        return 'monitoring_operasi'
+
+    # PAF (Plant Availability Factor) — plan_unplan + target_realisasi sangat spesifik
+    if has('plan_unplan') and has('target_realisasi', 'type2'):
+        return 'paf'
+
+    # Critical Equipment — corrective_action + mitigasi_action
+    if has('corrective_action') and has('mitigasi_action'):
+        return 'critical_equipment'
+
+    # TKDN — kdn + nominal + persentase
+    if has('kdn') and has('nominal') and has('persentase'):
+        return 'tkdn'
+
+    # Zero Clamp — tag_no_ln atau type_damage + type_perbaikan
+    if has('tag_no_ln') or (has('type_damage') and has('type_perbaikan', 'tanggal_dipasang')):
+        return 'zero_clamp'
+
+    # Bad Actor — category_action_plan + problem + tag_number/equipment
+    if has('category_action_plan') and has('problem') and has('tag_number', 'tag_no', 'equipment'):
+        return 'bad_actor'
+
     # Readiness — status_operation sangat khas dan tidak ada di domain lain
     if has('status_operation', 'status_operasi'):
         return 'readiness'
@@ -164,7 +202,8 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
     if "inspection_plan" in k:                                         return "inspection"
     if any(x in k for x in ("apr_", "readiness_atg", "power_steam", "weekly_monitoring")):
         return "readiness"
-    if any(x in k for x in ("issue_list", "paf_issue")):             return "org_issue"
+    if "paf_issue" in k or ("paf" in stem and any(x in sheet_l for x in ("issue", "permasalahan"))): return "paf_issue"
+    if any(x in k for x in ("issue_list",)):                          return "org_issue"
     if any(x in k for x in ("icu_database", "icu")):                 return "icu_issue"
     if "rcps" in stem:
         return "rcps_recommendation" if any(x in sheet_l for x in ("rekomendasi", "recommendation")) else "rcps"
@@ -1440,6 +1479,785 @@ def _build_rcps_nodes(con: duckdb.DuckDBPyConnection,
 
 
 # ---------------------------------------------------------------------------
+# Node builders — domain tambahan
+# ---------------------------------------------------------------------------
+
+def _build_bad_actor_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    tag_expr = _cs(c, 'tag_number', 'tag_no', 'equipment')
+    con.execute(f"""
+        CREATE TABLE bad_actor_stage AS
+        SELECT
+            {tag_expr} AS tag_raw,
+            {_cs(c, 'problem','masalah','highlight_issue')} AS problem,
+            {_cs(c, 'status')} AS status,
+            {_cs(c, 'action_plan','corrective_action')} AS action_plan,
+            {_cs(c, 'category_action_plan','action_plan_category')} AS category,
+            {_cs(c, 'progress')} AS progress,
+            {_cs(c, 'target_date','target')} AS target_date,
+            {_cs(c, 'no_irkap')} AS no_irkap,
+            {_cs(c, 'action_plan_remark','remark')} AS remark,
+            {_cs(c, 'unit_proses','unit')} AS unit_proses,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({tag_expr}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE bad_actor_stage ADD COLUMN bad_actor_id VARCHAR;
+        UPDATE bad_actor_stage
+        SET bad_actor_id = 'node_bad_actor_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || norm_code(tag_raw) || '|' || source_record_id);
+        ALTER TABLE bad_actor_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE bad_actor_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE bad_actor_stage.refinery_unit = e.refinery_unit
+          AND norm_code(bad_actor_stage.tag_raw) = norm_code(e.equipment_code_raw);
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT bad_actor_id, 'bad_actor', tag_raw,
+               coalesce(nullif(left(problem,90),''), tag_raw), 'bad_actor',
+               json_object('refinery_unit', refinery_unit, 'tag_raw', tag_raw,
+                   'problem', problem, 'status', status, 'action_plan', action_plan,
+                   'category', category, 'progress', progress, 'target_date', target_date,
+                   'no_irkap', no_irkap, 'remark', remark, 'unit_proses', unit_proses),
+               source_file, source_sheet, source_row, source_record_id
+        FROM bad_actor_stage WHERE bad_actor_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, bad_actor_id, 'EQUIPMENT_HAS_BAD_ACTOR',
+               'bad_actor', 1.0, 'equipment_exact', false,
+               json_object('tag_raw', tag_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM bad_actor_stage WHERE equipment_id IS NOT NULL AND bad_actor_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.bad_actor_id, 'REFINERY_UNIT_HAS_BAD_ACTOR',
+               'bad_actor', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM bad_actor_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.bad_actor_id IS NOT NULL
+    """)
+
+
+def _build_zero_clamp_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    tag_expr = _cs(c, 'tag_no_ln', 'tag_number', 'tag_no')
+    eq_expr = _cs(c, 'equipment', 'tag_no_ln', 'tag_number')
+    con.execute(f"""
+        CREATE TABLE zero_clamp_stage AS
+        SELECT
+            {tag_expr} AS tag_raw,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'description','deskripsi')} AS description,
+            {_cs(c, 'services','service')} AS services,
+            {_cs(c, 'type_damage','jenis_kerusakan')} AS type_damage,
+            {_cs(c, 'posisi')} AS posisi,
+            {_cs(c, 'type_perbaikan','jenis_perbaikan')} AS type_perbaikan,
+            {_cs(c, 'tanggal_dipasang','tgl_pasang')} AS tanggal_dipasang,
+            {_cs(c, 'tanggal_dilepas','tgl_lepas')} AS tanggal_dilepas,
+            {_cs(c, 'tanggal_rencana_perbaikan')} AS tanggal_rencana,
+            {_cs(c, 'no_irkap')} AS no_irkap,
+            {_cs(c, 'status')} AS status,
+            {_cs(c, 'remarks','remark')} AS remarks,
+            {_cs(c, 'area')} AS area,
+            {_cs(c, 'unit')} AS unit,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({tag_expr}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE zero_clamp_stage ADD COLUMN zc_id VARCHAR;
+        UPDATE zero_clamp_stage
+        SET zc_id = 'node_zero_clamp_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || tag_raw || '|' || source_record_id);
+        ALTER TABLE zero_clamp_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE zero_clamp_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE zero_clamp_stage.refinery_unit = e.refinery_unit
+          AND norm_code(zero_clamp_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT zc_id, 'zero_clamp', tag_raw,
+               coalesce(nullif(description,''), tag_raw), 'zero_clamp',
+               json_object('refinery_unit', refinery_unit, 'tag_raw', tag_raw,
+                   'services', services, 'type_damage', type_damage, 'posisi', posisi,
+                   'type_perbaikan', type_perbaikan, 'tanggal_dipasang', tanggal_dipasang,
+                   'tanggal_dilepas', tanggal_dilepas, 'tanggal_rencana', tanggal_rencana,
+                   'no_irkap', no_irkap, 'status', status, 'remarks', remarks,
+                   'area', area, 'unit', unit),
+               source_file, source_sheet, source_row, source_record_id
+        FROM zero_clamp_stage WHERE zc_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, zc_id, 'EQUIPMENT_HAS_ZERO_CLAMP',
+               'zero_clamp', 1.0, 'equipment_exact', false,
+               json_object('tag_raw', tag_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM zero_clamp_stage WHERE equipment_id IS NOT NULL AND zc_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.zc_id, 'REFINERY_UNIT_HAS_ZERO_CLAMP',
+               'zero_clamp', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM zero_clamp_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.zc_id IS NOT NULL
+    """)
+
+
+def _build_paf_nodes(con: duckdb.DuckDBPyConnection,
+                     paf_views: list[str], issue_views: list[str]) -> None:
+    if paf_views:
+        c = _union_cols(con, paf_views)
+        union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in paf_views)
+        ru_expr = f"ru_normalize({_cs(c, 'ru','refinery_unit','kilang','ru2', default='NULL')})"
+        con.execute(f"""
+            CREATE TABLE paf_stage AS
+            SELECT
+                {_cs(c, 'type','tipe')} AS type_unit,
+                {_cs(c, 'target_realisasi')} AS target_realisasi,
+                {_cs(c, 'color','warna')} AS color,
+                {_cs(c, 'value','nilai', cast=True, default="'0'")} AS value,
+                {_cs(c, 'plan_unplan')} AS plan_unplan,
+                {_cs(c, 'type2')} AS type2,
+                {_cs(c, 'month','bulan')} AS month,
+                {_cs(c, 'month_update')} AS month_update,
+                {_cs(c, 'target')} AS target,
+                {_cs(c, 'code_current', cast=True, default="'0'")} AS code_current,
+                coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+                _input_source_file AS source_file,
+                _input_source_sheet AS source_sheet,
+                _source_row AS source_row,
+                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+            FROM ({union_sql})
+            WHERE nullif(trim({_cs(c, 'type','tipe')}), '') IS NOT NULL
+        """)
+        con.execute("""
+            ALTER TABLE paf_stage ADD COLUMN paf_id VARCHAR;
+            UPDATE paf_stage
+            SET paf_id = 'node_paf_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || coalesce(type_unit,'') || '|' || coalesce(month_update,'') || '|' || source_record_id);
+        """)
+        con.execute("""
+            INSERT INTO node_raw
+            SELECT paf_id, 'paf', coalesce(refinery_unit,'UNKNOWN') || '|' || coalesce(type_unit,'') || '|' || coalesce(month_update,''),
+                   coalesce(type_unit, 'PAF'), 'paf',
+                   json_object('refinery_unit', refinery_unit, 'type_unit', type_unit,
+                       'target_realisasi', target_realisasi, 'color', color, 'value', value,
+                       'plan_unplan', plan_unplan, 'type2', type2, 'month', month,
+                       'month_update', month_update, 'target', target, 'code_current', code_current),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM paf_stage WHERE paf_id IS NOT NULL
+        """)
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT r.refinery_unit_id, s.paf_id, 'REFINERY_UNIT_HAS_PAF',
+                   'paf', 1.0, 'refinery_unit_direct', false,
+                   json_object('refinery_unit', s.refinery_unit),
+                   s.source_file, s.source_sheet, s.source_row, s.source_record_id
+            FROM paf_stage s
+            JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+            WHERE s.paf_id IS NOT NULL
+        """)
+
+    if issue_views:
+        c2 = _union_cols(con, issue_views)
+        union_sql2 = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in issue_views)
+        ru_expr2 = f"ru_normalize({_cs(c2, 'ru','refinery_unit','kilang', default='NULL')})"
+        con.execute(f"""
+            CREATE TABLE paf_issue_stage AS
+            SELECT
+                {_cs(c2, 'type','tipe')} AS type_unit,
+                {_cs(c2, 'issue','permasalahan','masalah')} AS issue,
+                {_cs(c2, 'date','tanggal', cast=True)} AS issue_date,
+                {_cs(c2, 'month_update')} AS month_update,
+                {_cs(c2, 'code_current', cast=True, default="'0'")} AS code_current,
+                coalesce({ru_expr2}, ru_from_filename(_input_source_file)) AS refinery_unit,
+                _input_source_file AS source_file,
+                _input_source_sheet AS source_sheet,
+                _source_row AS source_row,
+                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+            FROM ({union_sql2})
+            WHERE nullif(trim({_cs(c2, 'issue','permasalahan','masalah')}), '') IS NOT NULL
+        """)
+        con.execute("""
+            ALTER TABLE paf_issue_stage ADD COLUMN paf_issue_id VARCHAR;
+            UPDATE paf_issue_stage
+            SET paf_issue_id = 'node_paf_issue_' || md5(source_record_id);
+        """)
+        con.execute("""
+            INSERT INTO node_raw
+            SELECT paf_issue_id, 'paf_issue', source_record_id,
+                   coalesce(nullif(left(issue,90),''), 'PAF Issue'), 'paf',
+                   json_object('refinery_unit', refinery_unit, 'type_unit', type_unit,
+                       'issue', issue, 'issue_date', issue_date, 'month_update', month_update,
+                       'code_current', code_current),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM paf_issue_stage WHERE paf_issue_id IS NOT NULL
+        """)
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT r.refinery_unit_id, s.paf_issue_id, 'REFINERY_UNIT_HAS_PAF_ISSUE',
+                   'paf', 1.0, 'refinery_unit_direct', false,
+                   json_object('refinery_unit', s.refinery_unit),
+                   s.source_file, s.source_sheet, s.source_row, s.source_record_id
+            FROM paf_issue_stage s
+            JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+            WHERE s.paf_issue_id IS NOT NULL
+        """)
+
+
+def _build_atg_nodes(con: duckdb.DuckDBPyConnection,
+                     atg_views: list[str], program_views: list[str]) -> None:
+    if atg_views:
+        c = _union_cols(con, atg_views)
+        union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in atg_views)
+        ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+        eq_tangki = _cs(c, 'equipment_tangki', 'tag_no_tangki')
+        eq_atg = _cs(c, 'equipment_atg', 'tag_no_atg')
+        con.execute(f"""
+            CREATE TABLE atg_stage AS
+            SELECT
+                {_cs(c, 'tag_no_tangki','tag_tangki')} AS tag_tangki,
+                {_cs(c, 'tag_no_atg','tag_atg')} AS tag_atg,
+                {_cs(c, 'status_atg','status')} AS status_atg,
+                {_cs(c, 'status_interkoneksi_atg','status_interkoneksi')} AS status_interkoneksi,
+                {_cs(c, 'cert_no_atg','cert_no')} AS cert_no,
+                {_cs(c, 'date_expired_atg','date_expired')} AS date_expired,
+                {_cs(c, 'remark','keterangan')} AS remark,
+                {_cs(c, 'rtl')} AS rtl,
+                {_cs(c, 'status_rtl')} AS status_rtl,
+                {_cs(c, 'no_irkap')} AS no_irkap,
+                {_cs(c, 'month_update')} AS month_update,
+                {eq_tangki} AS equipment_tangki_raw,
+                {eq_atg} AS equipment_atg_raw,
+                coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+                _input_source_file AS source_file,
+                _input_source_sheet AS source_sheet,
+                _source_row AS source_row,
+                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+            FROM ({union_sql})
+            WHERE nullif(trim({_cs(c, 'tag_no_tangki','tag_tangki')}), '') IS NOT NULL
+        """)
+        con.execute("""
+            ALTER TABLE atg_stage ADD COLUMN atg_id VARCHAR;
+            UPDATE atg_stage
+            SET atg_id = 'node_atg_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || coalesce(tag_tangki,'') || '|' || coalesce(tag_atg,''));
+            ALTER TABLE atg_stage ADD COLUMN eq_tangki_id VARCHAR;
+            UPDATE atg_stage SET eq_tangki_id = e.equipment_id
+            FROM equipment_master e
+            WHERE atg_stage.refinery_unit = e.refinery_unit
+              AND norm_code(atg_stage.equipment_tangki_raw) = norm_code(e.equipment_code_raw);
+            ALTER TABLE atg_stage ADD COLUMN eq_atg_id VARCHAR;
+            UPDATE atg_stage SET eq_atg_id = e.equipment_id
+            FROM equipment_master e
+            WHERE atg_stage.refinery_unit = e.refinery_unit
+              AND norm_code(atg_stage.equipment_atg_raw) = norm_code(e.equipment_code_raw);
+        """)
+        con.execute("""
+            INSERT INTO node_raw
+            SELECT DISTINCT ON (atg_id)
+                   atg_id, 'atg', coalesce(tag_tangki, source_record_id),
+                   coalesce(tag_tangki, 'ATG'), 'atg',
+                   json_object('refinery_unit', refinery_unit, 'tag_tangki', tag_tangki,
+                       'tag_atg', tag_atg, 'status_atg', status_atg,
+                       'status_interkoneksi', status_interkoneksi, 'cert_no', cert_no,
+                       'date_expired', date_expired, 'remark', remark, 'rtl', rtl,
+                       'status_rtl', status_rtl, 'no_irkap', no_irkap),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM atg_stage WHERE atg_id IS NOT NULL ORDER BY atg_id, source_row
+        """)
+        for eq_col, rel_type in [('eq_tangki_id', 'EQUIPMENT_HAS_ATG'), ('eq_atg_id', 'EQUIPMENT_HAS_ATG')]:
+            con.execute(f"""
+                INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                    domain, confidence, match_rule, is_candidate, properties_json,
+                    source_file, source_sheet, source_row, source_record_id)
+                SELECT {eq_col}, atg_id, '{rel_type}',
+                       'atg', 1.0, 'equipment_exact', false,
+                       json_object('tag_tangki', tag_tangki),
+                       source_file, source_sheet, source_row, source_record_id
+                FROM atg_stage WHERE {eq_col} IS NOT NULL AND atg_id IS NOT NULL
+            """)
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT r.refinery_unit_id, s.atg_id, 'REFINERY_UNIT_HAS_ATG',
+                   'atg', 1.0, 'refinery_unit_direct', false,
+                   json_object('refinery_unit', s.refinery_unit),
+                   s.source_file, s.source_sheet, s.source_row, s.source_record_id
+            FROM atg_stage s
+            JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+            WHERE s.atg_id IS NOT NULL
+        """)
+
+    if program_views:
+        c2 = _union_cols(con, program_views)
+        union_sql2 = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in program_views)
+        ru_expr2 = f"ru_normalize({_cs(c2, 'refinery_unit','ru','kilang', default='NULL')})"
+        con.execute(f"""
+            CREATE TABLE atg_program_stage AS
+            SELECT
+                {_cs(c2, 'type','tipe')} AS type_program,
+                {_cs(c2, 'atg_eksisting')} AS atg_eksisting,
+                {_cs(c2, 'program_2024','program_kerja','program')} AS program_name,
+                {_cs(c2, 'prokja','progress')} AS prokja,
+                {_cs(c2, 'action_plan_category','kategori')} AS category,
+                {_cs(c2, 'target')} AS target,
+                {_cs(c2, 'month_update')} AS month_update,
+                coalesce({ru_expr2}, ru_from_filename(_input_source_file)) AS refinery_unit,
+                _input_source_file AS source_file,
+                _input_source_sheet AS source_sheet,
+                _source_row AS source_row,
+                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+            FROM ({union_sql2})
+            WHERE nullif(trim({_cs(c2, 'program_2024','program_kerja','program')}), '') IS NOT NULL
+        """)
+        con.execute("""
+            ALTER TABLE atg_program_stage ADD COLUMN prog_id VARCHAR;
+            UPDATE atg_program_stage
+            SET prog_id = 'node_atg_program_' || md5(source_record_id);
+        """)
+        con.execute("""
+            INSERT INTO node_raw
+            SELECT prog_id, 'atg_program', source_record_id,
+                   coalesce(nullif(left(program_name,90),''), 'ATG Program'), 'atg',
+                   json_object('refinery_unit', refinery_unit, 'type_program', type_program,
+                       'atg_eksisting', atg_eksisting, 'program_name', program_name,
+                       'prokja', prokja, 'category', category, 'target', target,
+                       'month_update', month_update),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM atg_program_stage WHERE prog_id IS NOT NULL
+        """)
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT r.refinery_unit_id, s.prog_id, 'REFINERY_UNIT_HAS_ATG_PROGRAM',
+                   'atg', 1.0, 'refinery_unit_direct', false,
+                   json_object('refinery_unit', s.refinery_unit),
+                   s.source_file, s.source_sheet, s.source_row, s.source_record_id
+            FROM atg_program_stage s
+            JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+            WHERE s.prog_id IS NOT NULL
+        """)
+
+
+def _build_pipeline_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    tag_expr = _cs(c, 'tag_number', 'tag_no', 'tag_no_ln')
+    eq_expr = _cs(c, 'equipment', 'tag_number', 'tag_no')
+    con.execute(f"""
+        CREATE TABLE pipeline_insp_stage AS
+        SELECT
+            {tag_expr} AS tag_raw,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'last_inspection_date','last_inspection', cast=True)} AS last_inspection,
+            {_cs(c, 'next_inspection_date','next_inspection', cast=True)} AS next_inspection,
+            {_cs(c, 'fluida_service','service','services')} AS fluida_service,
+            {_cs(c, 'nps')} AS nps,
+            {_cs(c, 'from_location','from_loc')} AS from_location,
+            {_cs(c, 'to_location','to_loc')} AS to_location,
+            {_cs(c, 'last_measured_thickness', cast=True, default="'0'")} AS thickness,
+            {_cs(c, 'rem_life_years', cast=True, default="'0'")} AS rem_life,
+            {_cs(c, 'jumlah_temporary_repair', cast=True, default="'0'")} AS temp_repair,
+            {_cs(c, 'remarks','remark')} AS remarks,
+            {_cs(c, 'area')} AS area,
+            {_cs(c, 'unit')} AS unit,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({tag_expr}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE pipeline_insp_stage ADD COLUMN pi_id VARCHAR;
+        UPDATE pipeline_insp_stage
+        SET pi_id = 'node_pipeline_inspection_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || tag_raw);
+        ALTER TABLE pipeline_insp_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE pipeline_insp_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE pipeline_insp_stage.refinery_unit = e.refinery_unit
+          AND norm_code(pipeline_insp_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT DISTINCT ON (pi_id)
+               pi_id, 'pipeline_inspection', tag_raw,
+               coalesce(nullif(tag_raw,''), 'Pipeline'), 'pipeline_inspection',
+               json_object('refinery_unit', refinery_unit, 'tag_raw', tag_raw,
+                   'last_inspection', last_inspection, 'next_inspection', next_inspection,
+                   'fluida_service', fluida_service, 'nps', nps,
+                   'from_location', from_location, 'to_location', to_location,
+                   'thickness', thickness, 'rem_life', rem_life,
+                   'temp_repair', temp_repair, 'remarks', remarks,
+                   'area', area, 'unit', unit),
+               source_file, source_sheet, source_row, source_record_id
+        FROM pipeline_insp_stage WHERE pi_id IS NOT NULL ORDER BY pi_id, source_row
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, pi_id, 'EQUIPMENT_HAS_PIPELINE_INSPECTION',
+               'pipeline_inspection', 1.0, 'equipment_exact', false,
+               json_object('tag_raw', tag_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM pipeline_insp_stage WHERE equipment_id IS NOT NULL AND pi_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.pi_id, 'REFINERY_UNIT_HAS_PIPELINE_INSPECTION',
+               'pipeline_inspection', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM pipeline_insp_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.pi_id IS NOT NULL
+    """)
+
+
+def _build_tkdn_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    con.execute(f"""
+        CREATE TABLE tkdn_stage AS
+        SELECT
+            {_cs(c, 'bulan','month','periode_bulan')} AS bulan,
+            {_cs(c, 'tahun','year', cast=True)} AS tahun,
+            {_cs(c, 'nominal', cast=True, default="'0'")} AS nominal,
+            {_cs(c, 'kdn', cast=True, default="'0'")} AS kdn,
+            {_cs(c, 'persentase','percentage', cast=True, default="'0'")} AS persentase,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({_cs(c, 'bulan','month','periode_bulan')}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE tkdn_stage ADD COLUMN tkdn_id VARCHAR;
+        UPDATE tkdn_stage
+        SET tkdn_id = 'node_tkdn_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || coalesce(bulan,'') || '|' || coalesce(tahun,''));
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT DISTINCT ON (tkdn_id)
+               tkdn_id, 'tkdn', coalesce(refinery_unit,'UNKNOWN') || '|' || coalesce(bulan,'') || '|' || coalesce(tahun,''),
+               coalesce(bulan,'') || ' ' || coalesce(tahun,''), 'tkdn',
+               json_object('refinery_unit', refinery_unit, 'bulan', bulan, 'tahun', tahun,
+                   'nominal', nominal, 'kdn', kdn, 'persentase', persentase),
+               source_file, source_sheet, source_row, source_record_id
+        FROM tkdn_stage WHERE tkdn_id IS NOT NULL ORDER BY tkdn_id, source_row
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.tkdn_id, 'REFINERY_UNIT_HAS_TKDN',
+               'tkdn', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM tkdn_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.tkdn_id IS NOT NULL
+    """)
+
+
+def _build_monitoring_operasi_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    eq_process = _cs(c, 'equipment_process')
+    eq_sts = _cs(c, 'equipment_sts')
+    con.execute(f"""
+        CREATE TABLE mon_operasi_stage AS
+        SELECT
+            {_cs(c, 'unit_proses','unit_proses')} AS unit_proses,
+            {_cs(c, 'unit')} AS unit,
+            {_cs(c, 'unit_measurement')} AS unit_measurement,
+            {_cs(c, 'design', cast=True, default="'0'")} AS design,
+            {_cs(c, 'minimal_capacity', cast=True, default="'0'")} AS minimal_capacity,
+            {_cs(c, 'plant_readiness')} AS plant_readiness,
+            {_cs(c, 'type_limitasi_process')} AS type_limitasi_process,
+            {eq_process} AS equipment_process_raw,
+            {_cs(c, 'limitasi_alert_process')} AS limitasi_alert_process,
+            {_cs(c, 'mitigasi_process','mitigasi_action')} AS mitigasi_process,
+            {_cs(c, 'target_sts', cast=True, default="'0'")} AS target_sts,
+            {_cs(c, 'actual', cast=True, default="'0'")} AS actual,
+            {_cs(c, 'type_limitasi_sts')} AS type_limitasi_sts,
+            {eq_sts} AS equipment_sts_raw,
+            {_cs(c, 'limitasi_alert_sts')} AS limitasi_alert_sts,
+            {_cs(c, 'month_update')} AS month_update,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({_cs(c, 'unit')}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE mon_operasi_stage ADD COLUMN mo_id VARCHAR;
+        UPDATE mon_operasi_stage
+        SET mo_id = 'node_monitoring_operasi_' || md5(source_record_id);
+        ALTER TABLE mon_operasi_stage ADD COLUMN eq_process_id VARCHAR;
+        UPDATE mon_operasi_stage SET eq_process_id = e.equipment_id
+        FROM equipment_master e
+        WHERE mon_operasi_stage.refinery_unit = e.refinery_unit
+          AND norm_code(mon_operasi_stage.equipment_process_raw) = norm_code(e.equipment_code_raw)
+          AND nullif(trim(mon_operasi_stage.equipment_process_raw), '') IS NOT NULL;
+        ALTER TABLE mon_operasi_stage ADD COLUMN eq_sts_id VARCHAR;
+        UPDATE mon_operasi_stage SET eq_sts_id = e.equipment_id
+        FROM equipment_master e
+        WHERE mon_operasi_stage.refinery_unit = e.refinery_unit
+          AND norm_code(mon_operasi_stage.equipment_sts_raw) = norm_code(e.equipment_code_raw)
+          AND nullif(trim(mon_operasi_stage.equipment_sts_raw), '') IS NOT NULL;
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT mo_id, 'monitoring_operasi', source_record_id,
+               coalesce(unit, 'Monitoring'), 'monitoring_operasi',
+               json_object('refinery_unit', refinery_unit, 'unit_proses', unit_proses,
+                   'unit', unit, 'unit_measurement', unit_measurement,
+                   'design', design, 'minimal_capacity', minimal_capacity,
+                   'plant_readiness', plant_readiness,
+                   'type_limitasi_process', type_limitasi_process,
+                   'limitasi_alert_process', limitasi_alert_process,
+                   'target_sts', target_sts, 'actual', actual,
+                   'type_limitasi_sts', type_limitasi_sts,
+                   'limitasi_alert_sts', limitasi_alert_sts,
+                   'month_update', month_update),
+               source_file, source_sheet, source_row, source_record_id
+        FROM mon_operasi_stage WHERE mo_id IS NOT NULL
+    """)
+    for eq_col, rel_type in [('eq_process_id', 'EQUIPMENT_HAS_MONITORING_OPERASI'),
+                              ('eq_sts_id', 'EQUIPMENT_HAS_MONITORING_OPERASI')]:
+        con.execute(f"""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT {eq_col}, mo_id, '{rel_type}',
+                   'monitoring_operasi', 1.0, 'equipment_exact', false,
+                   json_object('unit', unit),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM mon_operasi_stage WHERE {eq_col} IS NOT NULL AND mo_id IS NOT NULL
+        """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.mo_id, 'REFINERY_UNIT_HAS_MONITORING_OPERASI',
+               'monitoring_operasi', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM mon_operasi_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.mo_id IS NOT NULL
+    """)
+
+
+def _build_power_steam_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    eq_expr = _cs(c, 'equipment', 'tag_number', 'tag_no')
+    con.execute(f"""
+        CREATE TABLE power_steam_stage AS
+        SELECT
+            {_cs(c, 'type_equipment','tipe_equipment','type')} AS type_equipment,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'status_operation','status_operasi')} AS status_operation,
+            {_cs(c, 'status_n0','status_n')} AS status_n0,
+            {_cs(c, 'unit_measurement')} AS unit_measurement,
+            {_cs(c, 'desain','design', cast=True, default="'0'")} AS desain,
+            {_cs(c, 'kapasitas_max','kapasitas', cast=True, default="'0'")} AS kapasitas_max,
+            {_cs(c, 'average_actual','actual', cast=True, default="'0'")} AS average_actual,
+            {_cs(c, 'remark','keterangan')} AS remark,
+            {_cs(c, 'month_update','date_update')} AS month_update,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE power_steam_stage ADD COLUMN ps_id VARCHAR;
+        UPDATE power_steam_stage
+        SET ps_id = 'node_power_steam_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || equipment_raw || '|' || coalesce(month_update,''));
+        ALTER TABLE power_steam_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE power_steam_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE power_steam_stage.refinery_unit = e.refinery_unit
+          AND norm_code(power_steam_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT DISTINCT ON (ps_id)
+               ps_id, 'power_steam', equipment_raw,
+               coalesce(nullif(equipment_raw,''), 'Power/Steam'), 'power_steam',
+               json_object('refinery_unit', refinery_unit, 'type_equipment', type_equipment,
+                   'equipment_raw', equipment_raw, 'status_operation', status_operation,
+                   'status_n0', status_n0, 'unit_measurement', unit_measurement,
+                   'desain', desain, 'kapasitas_max', kapasitas_max,
+                   'average_actual', average_actual, 'remark', remark,
+                   'month_update', month_update),
+               source_file, source_sheet, source_row, source_record_id
+        FROM power_steam_stage WHERE ps_id IS NOT NULL ORDER BY ps_id, source_row
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, ps_id, 'EQUIPMENT_HAS_POWER_STEAM',
+               'power_steam', 1.0, 'equipment_exact', false,
+               json_object('equipment_raw', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM power_steam_stage WHERE equipment_id IS NOT NULL AND ps_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.ps_id, 'REFINERY_UNIT_HAS_POWER_STEAM',
+               'power_steam', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM power_steam_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.ps_id IS NOT NULL
+    """)
+
+
+def _build_critical_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    eq_expr = _cs(c, 'equipment', 'tag_number', 'tag_no')
+    con.execute(f"""
+        CREATE TABLE crit_eq_stage AS
+        SELECT
+            {_cs(c, 'unit_proses','type_equipment','type')} AS unit_proses,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'highlight_issue','problem','masalah')} AS highlight_issue,
+            {_cs(c, 'corrective_action','action_plan')} AS corrective_action,
+            {_cs(c, 'target_corrective','target_date','target')} AS target_corrective,
+            {_cs(c, 'traffic_corrective','traffic')} AS traffic_corrective,
+            {_cs(c, 'mitigasi_action','mitigasi')} AS mitigasi_action,
+            {_cs(c, 'target_mitigasi')} AS target_mitigasi,
+            {_cs(c, 'traffic_mitigasi')} AS traffic_mitigasi,
+            {_cs(c, 'month_update')} AS month_update,
+            {_cs(c, 'code_current', cast=True, default="'0'")} AS code_current,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE crit_eq_stage ADD COLUMN ce_id VARCHAR;
+        UPDATE crit_eq_stage
+        SET ce_id = 'node_critical_equipment_' || md5(source_record_id);
+        ALTER TABLE crit_eq_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE crit_eq_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE crit_eq_stage.refinery_unit = e.refinery_unit
+          AND norm_code(crit_eq_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT ce_id, 'critical_equipment', source_record_id,
+               coalesce(nullif(equipment_raw,''), 'Critical Equipment'), 'critical_equipment',
+               json_object('refinery_unit', refinery_unit, 'unit_proses', unit_proses,
+                   'equipment_raw', equipment_raw, 'highlight_issue', highlight_issue,
+                   'corrective_action', corrective_action, 'target_corrective', target_corrective,
+                   'traffic_corrective', traffic_corrective, 'mitigasi_action', mitigasi_action,
+                   'target_mitigasi', target_mitigasi, 'traffic_mitigasi', traffic_mitigasi,
+                   'month_update', month_update, 'code_current', code_current),
+               source_file, source_sheet, source_row, source_record_id
+        FROM crit_eq_stage WHERE ce_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, ce_id, 'EQUIPMENT_HAS_CRITICAL_ISSUE',
+               'critical_equipment', 1.0, 'equipment_exact', false,
+               json_object('equipment_raw', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM crit_eq_stage WHERE equipment_id IS NOT NULL AND ce_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.ce_id, 'REFINERY_UNIT_HAS_CRITICAL_EQUIPMENT',
+               'critical_equipment', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM crit_eq_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.ce_id IS NOT NULL
+    """)
+
+
+# ---------------------------------------------------------------------------
 # Output writer
 # ---------------------------------------------------------------------------
 
@@ -1555,6 +2373,9 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
             "reliability": [], "inspection": [], "readiness": [],
             "icu_issue": [], "org_issue": [], "rcps": [], "rcps_recommendation": [],
             "oa_allowance": [], "oa_availability": [], "oa_issue": [], "plo": [],
+            "bad_actor": [], "zero_clamp": [], "paf": [], "paf_issue": [],
+            "atg": [], "atg_program": [], "pipeline_inspection": [],
+            "tkdn": [], "monitoring_operasi": [], "power_steam": [], "critical_equipment": [],
         }
 
         job.phase = "Membaca sheet Excel"
@@ -1634,7 +2455,43 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         job.phase = "Membangun node RCPS"
         _safe("RCPS", _build_rcps_nodes, con, domain_views["rcps"], domain_views["rcps_recommendation"])
 
+        job.progress = 81
+        job.phase = "Membangun node Bad Actor"
+        _safe("Bad Actor", _build_bad_actor_nodes, con, domain_views["bad_actor"])
+
         job.progress = 82
+        job.phase = "Membangun node Zero Clamp"
+        _safe("Zero Clamp", _build_zero_clamp_nodes, con, domain_views["zero_clamp"])
+
+        job.progress = 83
+        job.phase = "Membangun node PAF"
+        _safe("PAF", _build_paf_nodes, con, domain_views["paf"], domain_views["paf_issue"])
+
+        job.progress = 84
+        job.phase = "Membangun node ATG"
+        _safe("ATG", _build_atg_nodes, con, domain_views["atg"], domain_views["atg_program"])
+
+        job.progress = 85
+        job.phase = "Membangun node Pipeline Inspection"
+        _safe("Pipeline Inspection", _build_pipeline_inspection_nodes, con, domain_views["pipeline_inspection"])
+
+        job.progress = 86
+        job.phase = "Membangun node TKDN"
+        _safe("TKDN", _build_tkdn_nodes, con, domain_views["tkdn"])
+
+        job.progress = 87
+        job.phase = "Membangun node Monitoring Operasi"
+        _safe("Monitoring Operasi", _build_monitoring_operasi_nodes, con, domain_views["monitoring_operasi"])
+
+        job.progress = 88
+        job.phase = "Membangun node Power & Steam"
+        _safe("Power Steam", _build_power_steam_nodes, con, domain_views["power_steam"])
+
+        job.progress = 89
+        job.phase = "Membangun node Critical Equipment"
+        _safe("Critical Equipment", _build_critical_equipment_nodes, con, domain_views["critical_equipment"])
+
+        job.progress = 90
         job.phase = "Menulis output CSV"
         counts = _write_outputs(con, out_dir)
         con.close()
