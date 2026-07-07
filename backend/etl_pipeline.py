@@ -255,32 +255,36 @@ CREATE OR REPLACE MACRO norm_code(x) AS
 
 CREATE OR REPLACE MACRO norm_equipment(x) AS norm_text(x);
 
+-- Output RU di-alias dengan nama kilang ('RU II Dumai', dst) sesuai format data
+-- yang diupload. Regex input tetap menerima 'RU II', '6201', maupun 'RU II Dumai'.
+-- Catatan: _ru_key() di app.py menyaring balik ke 'RU II' (roman saja) sehingga
+-- pencocokan Python tetap konsisten di kedua sisi.
 CREATE OR REPLACE MACRO ru_normalize(x) AS (
     CASE
         WHEN norm_text(x) IN ('R201','R202','K201','K202','6201','6202')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(II|2)( |$)') THEN 'RU II'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(II|2)( |$)') THEN 'RU II Dumai'
         WHEN norm_text(x) IN ('R301','K301','6301')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(III|3)( |$)') THEN 'RU III'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(III|3)( |$)') THEN 'RU III Plaju'
         WHEN norm_text(x) IN ('R401','R402','R403','K401','6401')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(IV|4)( |$)') THEN 'RU IV'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(IV|4)( |$)') THEN 'RU IV Cilacap'
         WHEN norm_text(x) IN ('R501','K501','6501')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(V|5)( |$)') THEN 'RU V'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(V|5)( |$)') THEN 'RU V Balikpapan'
         WHEN norm_text(x) IN ('R601','K601','6601')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(VI|6)( |$)') THEN 'RU VI'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(VI|6)( |$)') THEN 'RU VI Balongan'
         WHEN norm_text(x) IN ('R701','K701','6701')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(VII|7)( |$)') THEN 'RU VII'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(VII|7)( |$)') THEN 'RU VII Kasim'
         ELSE NULL
     END
 );
 
 CREATE OR REPLACE MACRO ru_from_filename(x) AS (
     CASE
-        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?ii([^iv]|$)') THEN 'RU II'
-        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?iii') THEN 'RU III'
-        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?iv([^i]|$)') THEN 'RU IV'
-        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?v([^i]|$)') THEN 'RU V'
-        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?vi([^i]|$)') THEN 'RU VI'
-        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?vii') THEN 'RU VII'
+        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?ii([^iv]|$)') THEN 'RU II Dumai'
+        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?iii') THEN 'RU III Plaju'
+        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?iv([^i]|$)') THEN 'RU IV Cilacap'
+        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?v([^i]|$)') THEN 'RU V Balikpapan'
+        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?vi([^i]|$)') THEN 'RU VI Balongan'
+        WHEN regexp_matches(lower(coalesce(x,'')), 'ru[_ -]?vii') THEN 'RU VII Kasim'
         ELSE NULL
     END
 );
@@ -292,22 +296,22 @@ CREATE TABLE IF NOT EXISTS ru_reference (
     display_order INTEGER, site_name VARCHAR
 );
 INSERT INTO ru_reference VALUES
-    ('RU II',  'node_ru_' || md5('RU II'),  2, 'Dumai'),
-    ('RU III', 'node_ru_' || md5('RU III'), 3, 'Plaju'),
-    ('RU IV',  'node_ru_' || md5('RU IV'),  4, 'Cilacap'),
-    ('RU V',   'node_ru_' || md5('RU V'),   5, 'Balikpapan'),
-    ('RU VI',  'node_ru_' || md5('RU VI'),  6, 'Balongan'),
-    ('RU VII', 'node_ru_' || md5('RU VII'), 7, 'Kasim');
+    ('RU II Dumai',      'node_ru_' || md5('RU II Dumai'),      2, 'Dumai'),
+    ('RU III Plaju',     'node_ru_' || md5('RU III Plaju'),     3, 'Plaju'),
+    ('RU IV Cilacap',    'node_ru_' || md5('RU IV Cilacap'),    4, 'Cilacap'),
+    ('RU V Balikpapan',  'node_ru_' || md5('RU V Balikpapan'),  5, 'Balikpapan'),
+    ('RU VI Balongan',   'node_ru_' || md5('RU VI Balongan'),   6, 'Balongan'),
+    ('RU VII Kasim',     'node_ru_' || md5('RU VII Kasim'),     7, 'Kasim');
 
 CREATE TABLE IF NOT EXISTS plant_ru_map (plant VARCHAR, refinery_unit VARCHAR);
 INSERT INTO plant_ru_map VALUES
-    ('R201','RU II'),('R202','RU II'),('K201','RU II'),('K202','RU II'),
-    ('6201','RU II'),('6202','RU II'),
-    ('R301','RU III'),('K301','RU III'),('6301','RU III'),
-    ('R401','RU IV'),('R402','RU IV'),('R403','RU IV'),('K401','RU IV'),('6401','RU IV'),
-    ('R501','RU V'),('K501','RU V'),('6501','RU V'),
-    ('R601','RU VI'),('K601','RU VI'),('6601','RU VI'),
-    ('R701','RU VII'),('K701','RU VII'),('6701','RU VII');
+    ('R201','RU II Dumai'),('R202','RU II Dumai'),('K201','RU II Dumai'),('K202','RU II Dumai'),
+    ('6201','RU II Dumai'),('6202','RU II Dumai'),
+    ('R301','RU III Plaju'),('K301','RU III Plaju'),('6301','RU III Plaju'),
+    ('R401','RU IV Cilacap'),('R402','RU IV Cilacap'),('R403','RU IV Cilacap'),('K401','RU IV Cilacap'),('6401','RU IV Cilacap'),
+    ('R501','RU V Balikpapan'),('K501','RU V Balikpapan'),('6501','RU V Balikpapan'),
+    ('R601','RU VI Balongan'),('K601','RU VI Balongan'),('6601','RU VI Balongan'),
+    ('R701','RU VII Kasim'),('K701','RU VII Kasim'),('6701','RU VII Kasim');
 
 CREATE TABLE node_raw (
     node_id VARCHAR, node_type VARCHAR, business_key VARCHAR,
@@ -1300,7 +1304,7 @@ def _build_plo_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
         FROM plo_stage p WHERE p.nomor_ijin IS NOT NULL AND p.nomor_ijin != ''
     """)
 
-    # Edges: RU → PLO permit (match "RU II Dumai" → "RU II")
+    # Edges: RU → PLO permit (kedua sisi dinormalisasi ru_normalize → 'RU II Dumai')
     con.execute("""
         INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
             domain, confidence, match_rule, is_candidate, properties_json,
