@@ -1322,133 +1322,117 @@ def _build_plo_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
 
 def _build_rcps_nodes(con: duckdb.DuckDBPyConnection,
                       rcps_views: list[str], rec_views: list[str]) -> None:
-    if not rcps_views and not rec_views:
+    # File RCPS Pertamina berformat gabungan: header RCPS + rekomendasi dalam
+    # satu tabel (tiap baris = 1 rekomendasi, dikelompokkan per RCPS No). Kedua
+    # domain (rcps / rcps_recommendation) diperlakukan sebagai sumber baris yang
+    # sama karena strukturnya identik.
+    views = list(dict.fromkeys(rcps_views + rec_views))
+    if not views:
         return
 
-    # 1. Node RCPS (root cause analysis)
-    if rcps_views:
-        c = _union_cols(con, rcps_views)
-        union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in rcps_views)
-        rcps_no = _cs(c, 'norcps','no_rcps','rcps_no','rcps_number','norcps','id_rcps')
-        ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','refineryunit', default='NULL')})"
-        con.execute(f"""
-            CREATE TABLE rcps_stage AS
-            SELECT
-                {rcps_no} AS rcps_no,
-                {_cs(c, 'equipment','tag_number','tag_no','equnr')} AS equipment_raw,
-                {_cs(c, 'problem','masalah','issue','deskripsi','description','judul','title')} AS problem_text,
-                {_cs(c, 'root_cause','akar_masalah','akar_penyebab','penyebab')} AS root_cause,
-                {_cs(c, 'finding','temuan')} AS finding,
-                {_cs(c, 'status','status_rcps')} AS status_rcps,
-                coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
-                _input_source_file AS source_file,
-                _input_source_sheet AS source_sheet,
-                _source_row AS source_row,
-                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
-            FROM ({union_sql})
-        """)
-        con.execute("""
-            ALTER TABLE rcps_stage ADD COLUMN rcps_id VARCHAR;
-            UPDATE rcps_stage SET rcps_id = 'node_rcps_' || md5(source_record_id);
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    rcps_no = _cs(c, 'rcps_no','norcps','no_rcps','rcps_number','id_rcps')
+    ru_expr = f"ru_normalize({_cs(c, 'kilang','refinery_unit','ru','plant','refineryunit', default='NULL')})"
+    con.execute(f"""
+        CREATE TABLE rcps_stage AS
+        SELECT
+            {rcps_no} AS rcps_no,
+            {_cs(c, 'judul_rcps','judul','title','problem','masalah')} AS judul_rcps,
+            {_cs(c, 'link_rcps','link','url')} AS link_rcps,
+            {_cs(c, 'description','deskripsi','recommendation','rekomendasi','saran','tindak_lanjut','action')} AS rec_text,
+            {_cs(c, 'recomendation','recommendation_category','kategori_rekomendasi','recommendation_type','recommendationcategory')} AS rec_category,
+            {_cs(c, 'traffic','traffic_light','warna')} AS traffic,
+            {_cs(c, 'pic','responsible','penanggung_jawab')} AS pic,
+            {_cs(c, 'target','target_date','due_date','tanggal_target')} AS target_date,
+            {_cs(c, 'no_irkap','noirkap','irkap_no','no_rkap','irkap')} AS no_irkap,
+            {_cs(c, 'remark','keterangan','status','catatan')} AS remark,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({rcps_no}), '') IS NOT NULL
+    """)
+    # rcps_id dikelompokkan per (RU + nomor RCPS) — satu node RCPS per kasus
+    con.execute("""
+        ALTER TABLE rcps_stage ADD COLUMN rcps_id VARCHAR;
+        UPDATE rcps_stage
+        SET rcps_id = 'node_rcps_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || norm_code(rcps_no));
 
-            ALTER TABLE rcps_stage ADD COLUMN equipment_id VARCHAR;
-            UPDATE rcps_stage SET equipment_id = e.equipment_id
-            FROM equipment_master e
-            WHERE rcps_stage.refinery_unit = e.refinery_unit
-              AND norm_code(rcps_stage.equipment_raw) = norm_code(e.equipment_code_raw)
-              AND nullif(trim(rcps_stage.equipment_raw), '') IS NOT NULL;
-        """)
-        con.execute("""
-            INSERT INTO node_raw
-            SELECT rcps_id, 'rcps', coalesce(nullif(rcps_no,''), source_record_id),
-                   coalesce(nullif(left(problem_text,80),''), nullif(rcps_no,''), 'RCPS'),
-                   'rcps',
-                   json_object('refinery_unit', refinery_unit, 'equipment_raw', equipment_raw,
-                       'rcps_no', rcps_no, 'problem', problem_text, 'root_cause', root_cause,
-                       'finding', finding, 'status_rcps', status_rcps),
-                   source_file, source_sheet, source_row, source_record_id
-            FROM rcps_stage WHERE rcps_id IS NOT NULL
-        """)
-        # ISSUE_HAS_RCPS — cocokkan issue ke rcps via equipment yang sama
-        has_icu = con.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name='icu_stage'"
-        ).fetchone()[0]
-        if has_icu:
-            con.execute("""
-                INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-                    domain, confidence, match_rule, is_candidate, properties_json,
-                    source_file, source_sheet, source_row, source_record_id)
-                SELECT DISTINCT i.issue_id, r.rcps_id, 'ISSUE_HAS_RCPS',
-                       'rcps', 0.8, 'equipment_match', true,
-                       json_object('match_token', r.equipment_raw),
-                       r.source_file, r.source_sheet, r.source_row, r.source_record_id
-                FROM rcps_stage r
-                JOIN icu_stage i
-                  ON r.refinery_unit = i.refinery_unit
-                 AND norm_code(r.equipment_raw) = norm_code(i.equipment_raw)
-                 AND nullif(trim(r.equipment_raw), '') IS NOT NULL
-                WHERE r.rcps_id IS NOT NULL AND i.issue_id IS NOT NULL
-            """)
-        # EQUIPMENT_HAS_RCPS — link langsung ke equipment
-        con.execute("""
-            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-                domain, confidence, match_rule, is_candidate, properties_json,
-                source_file, source_sheet, source_row, source_record_id)
-            SELECT equipment_id, rcps_id, 'EQUIPMENT_HAS_RCPS',
-                   'rcps', 1.0, 'ru_and_equipment_exact', false,
-                   json_object('match_token', equipment_raw),
-                   source_file, source_sheet, source_row, source_record_id
-            FROM rcps_stage WHERE equipment_id IS NOT NULL AND rcps_id IS NOT NULL
-        """)
+        ALTER TABLE rcps_stage ADD COLUMN rec_id VARCHAR;
+        UPDATE rcps_stage SET rec_id = 'node_recommendation_' || md5(source_record_id);
+    """)
 
-    # 2. Node rekomendasi
-    if rec_views:
-        c = _union_cols(con, rec_views)
-        union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in rec_views)
-        rcps_ref = _cs(c, 'norcps','no_rcps','rcps_no','rcps_number','id_rcps')
-        con.execute(f"""
-            CREATE TABLE rcps_rec_stage AS
-            SELECT
-                {rcps_ref} AS rcps_no,
-                {_cs(c, 'recommendation','rekomendasi','saran','action','tindak_lanjut')} AS rec_text,
-                {_cs(c, 'pic','responsible','penanggung_jawab')} AS pic,
-                {_cs(c, 'target_date','target','due_date','tanggal_target', cast=True)} AS target_date,
-                {_cs(c, 'status','status_rekomendasi','status_recommendation')} AS status_rec,
-                _input_source_file AS source_file,
-                _input_source_sheet AS source_sheet,
-                _source_row AS source_row,
-                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
-            FROM ({union_sql})
-            WHERE nullif(trim({_cs(c, 'recommendation','rekomendasi','saran','action','tindak_lanjut')}), '') IS NOT NULL
-        """)
-        con.execute("""
-            ALTER TABLE rcps_rec_stage ADD COLUMN rec_id VARCHAR;
-            UPDATE rcps_rec_stage SET rec_id = 'node_recommendation_' || md5(source_record_id);
-        """)
-        con.execute("""
-            INSERT INTO node_raw
-            SELECT rec_id, 'recommendation', source_record_id,
-                   coalesce(nullif(left(rec_text,80),''), 'Rekomendasi'), 'rcps',
-                   json_object('rcps_no', rcps_no, 'recommendation', rec_text, 'pic', pic,
-                       'target_date', target_date, 'status', status_rec),
-                   source_file, source_sheet, source_row, source_record_id
-            FROM rcps_rec_stage WHERE rec_id IS NOT NULL
-        """)
-        # RCPS_HAS_RECOMMENDATION — cocokkan via nomor RCPS
-        con.execute("""
-            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-                domain, confidence, match_rule, is_candidate, properties_json,
-                source_file, source_sheet, source_row, source_record_id)
-            SELECT DISTINCT r.rcps_id, rec.rec_id, 'RCPS_HAS_RECOMMENDATION',
-                   'rcps', 1.0, 'rcps_no_match', false,
-                   json_object('rcps_no', rec.rcps_no),
-                   rec.source_file, rec.source_sheet, rec.source_row, rec.source_record_id
-            FROM rcps_rec_stage rec
-            JOIN rcps_stage r
-              ON norm_code(rec.rcps_no) = norm_code(r.rcps_no)
-             AND nullif(trim(rec.rcps_no), '') IS NOT NULL
-            WHERE rec.rec_id IS NOT NULL AND r.rcps_id IS NOT NULL
-        """)
+    # Node RCPS (unik per nomor RCPS, judul dari Judul RCPS)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT DISTINCT ON (rcps_id)
+               rcps_id, 'rcps', rcps_no,
+               coalesce(nullif(left(judul_rcps,90),''), rcps_no), 'rcps',
+               json_object('refinery_unit', refinery_unit, 'rcps_no', rcps_no,
+                   'judul_rcps', judul_rcps, 'link_rcps', link_rcps),
+               source_file, source_sheet, source_row, source_record_id
+        FROM rcps_stage WHERE rcps_id IS NOT NULL
+    """)
+
+    # Node rekomendasi (per baris)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT rec_id, 'recommendation', source_record_id,
+               coalesce(nullif(left(rec_text,90),''), 'Rekomendasi'), 'rcps',
+               json_object('rcps_no', rcps_no, 'recommendation', rec_text,
+                   'rec_category', rec_category, 'traffic', traffic, 'pic', pic,
+                   'target_date', target_date, 'no_irkap', no_irkap, 'remark', remark),
+               source_file, source_sheet, source_row, source_record_id
+        FROM rcps_stage WHERE rec_id IS NOT NULL AND nullif(trim(rec_text),'') IS NOT NULL
+    """)
+
+    # RCPS_HAS_RECOMMENDATION
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT rcps_id, rec_id, 'RCPS_HAS_RECOMMENDATION',
+               'rcps', 1.0, 'rcps_no_group', false,
+               json_object('rcps_no', rcps_no),
+               source_file, source_sheet, source_row, source_record_id
+        FROM rcps_stage
+        WHERE rcps_id IS NOT NULL AND rec_id IS NOT NULL
+          AND nullif(trim(rec_text),'') IS NOT NULL
+    """)
+
+    # REFINERY_UNIT_HAS_RCPS
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.rcps_id, 'REFINERY_UNIT_HAS_RCPS',
+               'rcps', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM rcps_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.rcps_id IS NOT NULL
+    """)
+
+    # RCPS → RKAP program via No. IRKAP (jika ada)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT s.rcps_id, n.node_id, 'RCPS_HAS_RKAP_PROGRAM',
+               'rcps', 0.9, 'irkap_no_match', false,
+               json_object('no_irkap', s.no_irkap),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM rcps_stage s
+        JOIN node_raw n
+          ON n.node_type = 'rkap_program'
+         AND norm_code(s.no_irkap) = norm_code(n.properties_json ->> 'program_no')
+         AND nullif(trim(s.no_irkap), '') IS NOT NULL
+        WHERE s.rcps_id IS NOT NULL
+    """)
 
 
 # ---------------------------------------------------------------------------
