@@ -861,6 +861,32 @@ def _build_reliability_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
         FROM reliability_stage WHERE equipment_id IS NOT NULL AND obs_id IS NOT NULL
     """)
 
+    # Node periode (bulan-tahun) + OBSERVED_IN_PERIOD
+    con.execute("""
+        ALTER TABLE reliability_stage ADD COLUMN period_key VARCHAR;
+        UPDATE reliability_stage
+        SET period_key = nullif(trim(coalesce(bulan,'') || ' ' || coalesce(tahun,'')), '')
+        WHERE bulan IS NOT NULL OR tahun IS NOT NULL;
+    """)
+    con.execute("""
+        INSERT INTO node_raw (node_id, node_type, business_key, label, domain, properties_json)
+        SELECT DISTINCT
+            'node_period_' || md5(period_key),
+            'time_period', period_key, period_key, 'reliability',
+            json_object('bulan', bulan, 'tahun', tahun)
+        FROM reliability_stage WHERE period_key IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT obs_id, 'node_period_' || md5(period_key), 'OBSERVED_IN_PERIOD',
+               'reliability', 1.0, 'period_direct', false,
+               json_object('period', period_key),
+               source_file, source_sheet, source_row, source_record_id
+        FROM reliability_stage WHERE obs_id IS NOT NULL AND period_key IS NOT NULL
+    """)
+
 
 def _build_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
@@ -1291,6 +1317,141 @@ def _build_plo_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# RCPS: Root Cause Problem Solving + rekomendasi
+# ---------------------------------------------------------------------------
+
+def _build_rcps_nodes(con: duckdb.DuckDBPyConnection,
+                      rcps_views: list[str], rec_views: list[str]) -> None:
+    if not rcps_views and not rec_views:
+        return
+
+    # 1. Node RCPS (root cause analysis)
+    if rcps_views:
+        c = _union_cols(con, rcps_views)
+        union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in rcps_views)
+        rcps_no = _cs(c, 'norcps','no_rcps','rcps_no','rcps_number','norcps','id_rcps')
+        ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','refineryunit', default='NULL')})"
+        con.execute(f"""
+            CREATE TABLE rcps_stage AS
+            SELECT
+                {rcps_no} AS rcps_no,
+                {_cs(c, 'equipment','tag_number','tag_no','equnr')} AS equipment_raw,
+                {_cs(c, 'problem','masalah','issue','deskripsi','description','judul','title')} AS problem_text,
+                {_cs(c, 'root_cause','akar_masalah','akar_penyebab','penyebab')} AS root_cause,
+                {_cs(c, 'finding','temuan')} AS finding,
+                {_cs(c, 'status','status_rcps')} AS status_rcps,
+                coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+                _input_source_file AS source_file,
+                _input_source_sheet AS source_sheet,
+                _source_row AS source_row,
+                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+            FROM ({union_sql})
+        """)
+        con.execute("""
+            ALTER TABLE rcps_stage ADD COLUMN rcps_id VARCHAR;
+            UPDATE rcps_stage SET rcps_id = 'node_rcps_' || md5(source_record_id);
+
+            ALTER TABLE rcps_stage ADD COLUMN equipment_id VARCHAR;
+            UPDATE rcps_stage SET equipment_id = e.equipment_id
+            FROM equipment_master e
+            WHERE rcps_stage.refinery_unit = e.refinery_unit
+              AND norm_code(rcps_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+              AND nullif(trim(rcps_stage.equipment_raw), '') IS NOT NULL;
+        """)
+        con.execute("""
+            INSERT INTO node_raw
+            SELECT rcps_id, 'rcps', coalesce(nullif(rcps_no,''), source_record_id),
+                   coalesce(nullif(left(problem_text,80),''), nullif(rcps_no,''), 'RCPS'),
+                   'rcps',
+                   json_object('refinery_unit', refinery_unit, 'equipment_raw', equipment_raw,
+                       'rcps_no', rcps_no, 'problem', problem_text, 'root_cause', root_cause,
+                       'finding', finding, 'status_rcps', status_rcps),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM rcps_stage WHERE rcps_id IS NOT NULL
+        """)
+        # ISSUE_HAS_RCPS — cocokkan issue ke rcps via equipment yang sama
+        has_icu = con.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name='icu_stage'"
+        ).fetchone()[0]
+        if has_icu:
+            con.execute("""
+                INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                    domain, confidence, match_rule, is_candidate, properties_json,
+                    source_file, source_sheet, source_row, source_record_id)
+                SELECT DISTINCT i.issue_id, r.rcps_id, 'ISSUE_HAS_RCPS',
+                       'rcps', 0.8, 'equipment_match', true,
+                       json_object('match_token', r.equipment_raw),
+                       r.source_file, r.source_sheet, r.source_row, r.source_record_id
+                FROM rcps_stage r
+                JOIN icu_stage i
+                  ON r.refinery_unit = i.refinery_unit
+                 AND norm_code(r.equipment_raw) = norm_code(i.equipment_raw)
+                 AND nullif(trim(r.equipment_raw), '') IS NOT NULL
+                WHERE r.rcps_id IS NOT NULL AND i.issue_id IS NOT NULL
+            """)
+        # EQUIPMENT_HAS_RCPS — link langsung ke equipment
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT equipment_id, rcps_id, 'EQUIPMENT_HAS_RCPS',
+                   'rcps', 1.0, 'ru_and_equipment_exact', false,
+                   json_object('match_token', equipment_raw),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM rcps_stage WHERE equipment_id IS NOT NULL AND rcps_id IS NOT NULL
+        """)
+
+    # 2. Node rekomendasi
+    if rec_views:
+        c = _union_cols(con, rec_views)
+        union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in rec_views)
+        rcps_ref = _cs(c, 'norcps','no_rcps','rcps_no','rcps_number','id_rcps')
+        con.execute(f"""
+            CREATE TABLE rcps_rec_stage AS
+            SELECT
+                {rcps_ref} AS rcps_no,
+                {_cs(c, 'recommendation','rekomendasi','saran','action','tindak_lanjut')} AS rec_text,
+                {_cs(c, 'pic','responsible','penanggung_jawab')} AS pic,
+                {_cs(c, 'target_date','target','due_date','tanggal_target', cast=True)} AS target_date,
+                {_cs(c, 'status','status_rekomendasi','status_recommendation')} AS status_rec,
+                _input_source_file AS source_file,
+                _input_source_sheet AS source_sheet,
+                _source_row AS source_row,
+                'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+            FROM ({union_sql})
+            WHERE nullif(trim({_cs(c, 'recommendation','rekomendasi','saran','action','tindak_lanjut')}), '') IS NOT NULL
+        """)
+        con.execute("""
+            ALTER TABLE rcps_rec_stage ADD COLUMN rec_id VARCHAR;
+            UPDATE rcps_rec_stage SET rec_id = 'node_recommendation_' || md5(source_record_id);
+        """)
+        con.execute("""
+            INSERT INTO node_raw
+            SELECT rec_id, 'recommendation', source_record_id,
+                   coalesce(nullif(left(rec_text,80),''), 'Rekomendasi'), 'rcps',
+                   json_object('rcps_no', rcps_no, 'recommendation', rec_text, 'pic', pic,
+                       'target_date', target_date, 'status', status_rec),
+                   source_file, source_sheet, source_row, source_record_id
+            FROM rcps_rec_stage WHERE rec_id IS NOT NULL
+        """)
+        # RCPS_HAS_RECOMMENDATION — cocokkan via nomor RCPS
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT r.rcps_id, rec.rec_id, 'RCPS_HAS_RECOMMENDATION',
+                   'rcps', 1.0, 'rcps_no_match', false,
+                   json_object('rcps_no', rec.rcps_no),
+                   rec.source_file, rec.source_sheet, rec.source_row, rec.source_record_id
+            FROM rcps_rec_stage rec
+            JOIN rcps_stage r
+              ON norm_code(rec.rcps_no) = norm_code(r.rcps_no)
+             AND nullif(trim(rec.rcps_no), '') IS NOT NULL
+            WHERE rec.rec_id IS NOT NULL AND r.rcps_id IS NOT NULL
+        """)
+
+
+# ---------------------------------------------------------------------------
 # Output writer
 # ---------------------------------------------------------------------------
 
@@ -1480,6 +1641,10 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         job.progress = 79
         job.phase = "Membangun node PLO"
         _safe("PLO", _build_plo_nodes, con, domain_views["plo"])
+
+        job.progress = 80
+        job.phase = "Membangun node RCPS"
+        _safe("RCPS", _build_rcps_nodes, con, domain_views["rcps"], domain_views["rcps_recommendation"])
 
         job.progress = 82
         job.phase = "Menulis output CSV"
