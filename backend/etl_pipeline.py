@@ -592,6 +592,9 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
                coalesce(nullif(order_desc,''), order_raw), 'maintenance',
                json_object(
                    'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'order_raw', order_raw,
+                   'notification_raw', notification_raw,
                    'order_type', order_type,
                    'priority', priority,
                    'user_status', user_status,
@@ -722,6 +725,7 @@ def _build_rkap_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
                coalesce(nullif(program_name,''), program_no), 'cost_program',
                json_object(
                    'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
                    'program_no', program_no,
                    'kategori', kategori,
                    'kelompok_biaya', kelompok_biaya,
