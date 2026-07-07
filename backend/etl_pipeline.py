@@ -1535,7 +1535,7 @@ def _write_outputs(con: duckdb.DuckDBPyConnection, out_dir: Path) -> dict[str, i
 # Main ETL runner
 # ---------------------------------------------------------------------------
 
-def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
+def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: bool = False) -> None:
     try:
         job.status = "running"
         job.phase = "Memuat file Excel"
@@ -1648,7 +1648,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         from .importer import _select_ready_files, _run_import
         scan = scan_package(out_dir, validate=True)
         files = _select_ready_files(scan, allow_partial=True)
-        _run_import(job, files, out_dir, True, existing_dataset_id=job.dataset_id)
+        _run_import(job, files, out_dir, True, existing_dataset_id=job.dataset_id, append=append)
 
     except Exception as exc:
         job.status = "failed"
@@ -1657,7 +1657,8 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path) -> None:
         job.finished_at = time.time()
 
 
-def start_etl_import(name: str, excel_paths: list[Path], existing_dataset_id: str | None = None) -> ImportJob:
+def start_etl_import(name: str, excel_paths: list[Path], existing_dataset_id: str | None = None,
+                     append: bool = False) -> ImportJob:
     out_dir = UPLOADS_DIR / uuid.uuid4().hex
     out_dir.mkdir(parents=True, exist_ok=True)
     job = _create_job(name)
@@ -1665,6 +1666,6 @@ def start_etl_import(name: str, excel_paths: list[Path], existing_dataset_id: st
     with ETL_JOBS_LOCK:
         ETL_JOBS[job.id] = job
     threading.Thread(
-        target=_run_etl, args=(job, excel_paths, out_dir), daemon=True
+        target=_run_etl, args=(job, excel_paths, out_dir, append), daemon=True
     ).start()
     return job

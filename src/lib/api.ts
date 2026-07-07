@@ -46,8 +46,8 @@ export const api = {
   },
   importStatus: (id: string) => request<ImportJob>(`/imports/${id}`),
   cancelImport: (id: string) => request(`/imports/${id}`, { method: 'DELETE' }),
-  initChunkedUpload: (name: string, files: { name: string; total_chunks: number }[]) =>
-    request<{ upload_id: string }>('/imports/chunked/init', { method: 'POST', body: JSON.stringify({ name, files }) }),
+  initChunkedUpload: (name: string, files: { name: string; total_chunks: number }[], mode?: string, existing_dataset_id?: string) =>
+    request<{ upload_id: string }>('/imports/chunked/init', { method: 'POST', body: JSON.stringify({ name, files, mode: mode ?? 'csv', existing_dataset_id: existing_dataset_id ?? null }) }),
   uploadChunk: (uploadId: string, fileName: string, chunkIndex: number, data: Blob) => {
     const form = new FormData()
     form.append('file_name', fileName)

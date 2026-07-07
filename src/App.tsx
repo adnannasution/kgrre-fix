@@ -389,10 +389,13 @@ const ETL_PHASES: Record<string, number> = {
   'Membangun node PLO': 82, 'Menulis output CSV': 88, 'Import ke database': 90,
 }
 
+const ETL_CHUNK_SIZE = 4 * 1024 * 1024 // 4 MB per chunk
+
 function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNavigate: (p: Page) => void }) {
   const [files, setFiles] = useState<File[]>([])
   const [job, setJob] = useState<ImportJob>()
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string>()
 
   useEffect(() => {
@@ -412,14 +415,36 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
     if (!files.length) return
     setError(undefined)
     setUploading(true)
+    setUploadProgress(null)
     try {
-      const j = await api.etlUpload(files, datasetName)
+      const entries = files.map(f => ({
+        file: f,
+        name: f.name,
+        total_chunks: Math.max(1, Math.ceil(f.size / ETL_CHUNK_SIZE)),
+      }))
+      const totalChunks = entries.reduce((s, e) => s + e.total_chunks, 0)
+      let doneChunks = 0
+      const { upload_id } = await api.initChunkedUpload(
+        datasetName,
+        entries.map(e => ({ name: e.name, total_chunks: e.total_chunks })),
+        'etl',
+      )
+      for (const entry of entries) {
+        for (let i = 0; i < entry.total_chunks; i++) {
+          const chunk = entry.file.slice(i * ETL_CHUNK_SIZE, (i + 1) * ETL_CHUNK_SIZE)
+          await api.uploadChunk(upload_id, entry.name, i, chunk)
+          doneChunks++
+          setUploadProgress({ done: doneChunks, total: totalChunks })
+        }
+      }
+      const j = await api.commitChunkedUpload(upload_id)
       setJob(j)
       setFiles([])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload gagal.')
     } finally {
       setUploading(false)
+      setUploadProgress(null)
     }
   }
 
@@ -451,6 +476,14 @@ function EtlUploadPanel({ name: datasetName, onNavigate }: { name: string; onNav
             )}
           </div>
           {error && <p className="job-error">{error}</p>}
+          {uploadProgress && (
+            <div style={{ fontSize: '13px', color: 'var(--muted)' }}>
+              Mengunggah… chunk {uploadProgress.done}/{uploadProgress.total}
+              <div style={{ marginTop: '4px', height: '4px', background: 'var(--border)', borderRadius: '2px' }}>
+                <div style={{ height: '100%', borderRadius: '2px', background: 'var(--accent)', width: `${Math.round(uploadProgress.done / uploadProgress.total * 100)}%`, transition: 'width .2s' }} />
+              </div>
+            </div>
+          )}
           <button className="primary large" disabled={!files.length || uploading} onClick={() => void startEtl()}>
             {uploading ? 'Mengunggah…' : 'Proses ETL & Buat Knowledge Graph'} <ChevronIcon />
           </button>
@@ -2475,6 +2508,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
   const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
   const [fileLoading, setFileLoading] = useState<string | null>(null)
   const [syncTarget, setSyncTarget] = useState<DatasetSummary | null>(null)
+  const [syncMode, setSyncMode] = useState<'replace' | 'append'>('replace')
   const [syncing, setSyncing] = useState(false)
   const [syncJob, setSyncJob] = useState<ImportJob | null>(null)
   const syncInputRef = useRef<HTMLInputElement>(null)
@@ -2550,8 +2584,9 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
     }
   }
 
-  const startSync = (dataset: DatasetSummary) => {
+  const startSync = (dataset: DatasetSummary, mode: 'replace' | 'append' = 'replace') => {
     setSyncTarget(dataset)
+    setSyncMode(mode)
     setSyncJob(null)
     setTimeout(() => syncInputRef.current?.click(), 50)
   }
@@ -2562,7 +2597,24 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
     e.target.value = ''
     setSyncing(true)
     try {
-      const job = await api.etlSync(syncTarget.id, files)
+      const entries = files.map(f => ({
+        file: f,
+        name: f.name,
+        total_chunks: Math.max(1, Math.ceil(f.size / ETL_CHUNK_SIZE)),
+      }))
+      const { upload_id } = await api.initChunkedUpload(
+        syncTarget.name,
+        entries.map(en => ({ name: en.name, total_chunks: en.total_chunks })),
+        syncMode === 'append' ? 'etl_append' : 'etl',
+        syncTarget.id,
+      )
+      for (const entry of entries) {
+        for (let i = 0; i < entry.total_chunks; i++) {
+          const chunk = entry.file.slice(i * ETL_CHUNK_SIZE, (i + 1) * ETL_CHUNK_SIZE)
+          await api.uploadChunk(upload_id, entry.name, i, chunk)
+        }
+      }
+      const job = await api.commitChunkedUpload(upload_id)
       setSyncJob(job)
       const poll = setInterval(async () => {
         const updated = await api.importStatus(job.id)
@@ -2697,6 +2749,27 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                           ) : (
                             <span className="dm-no-files">Tidak ada file yang tercatat.</span>
                           )}
+                          <div className="dm-sync-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px', alignItems: 'center' }}>
+                            <button
+                              className="secondary small"
+                              disabled={syncing}
+                              onClick={() => startSync(dataset, 'append')}
+                              title="Upload file Excel domain tambahan — data lama dipertahankan, hanya menambah node/relasi baru. Jalankan Rebuild Relasi setelah semua file masuk."
+                            >
+                              ➕ Tambah data (gabung)
+                            </button>
+                            <button
+                              className="secondary small"
+                              disabled={syncing}
+                              onClick={() => startSync(dataset, 'replace')}
+                              title="Ganti seluruh isi dataset dengan file Excel baru (data lama dihapus)."
+                            >
+                              🔄 Upload ulang (timpa semua)
+                            </button>
+                            <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                              Tambah data = upload domain satu per satu tanpa menghapus yang lama, lalu klik <b>Rebuild Relasi</b>.
+                            </span>
+                          </div>
                         </div>
                       </td>
                     </tr>

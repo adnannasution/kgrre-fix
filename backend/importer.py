@@ -129,11 +129,16 @@ def _select_ready_files(scan: dict, allow_partial: bool) -> list[dict]:
 
 
 def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_package: bool,
-                existing_dataset_id: str | None = None) -> None:
+                existing_dataset_id: str | None = None, append: bool = False) -> None:
     is_sync = existing_dataset_id is not None
     dataset_id = existing_dataset_id if is_sync else uuid.uuid4().hex
-    if is_sync:
+    if is_sync and not append:
+        # Sync biasa = timpa: hapus seluruh isi dataset dulu.
         _drop_dataset_data(dataset_id)
+    elif is_sync and append:
+        # Mode tambah: pertahankan node/relasi lama (dedupe via ON CONFLICT),
+        # hanya bersihkan tabel dashboard/audit agar tidak menumpuk ganda.
+        _clear_dashboard_data(dataset_id)
     try:
         job.status = "running"
         job.phase = "Fingerprint"
@@ -177,9 +182,18 @@ def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_
             )
 
             if is_sync:
+                workbooks = [item["name"] for item in fingerprints]
+                if append:
+                    # Gabungkan daftar file lama + baru (dedupe, pertahankan urutan)
+                    from .config import get_dataset_row
+                    existing_row = get_dataset_row(dataset_id) or {}
+                    merged = list(existing_row.get("workbooks") or [])
+                    for wb in workbooks:
+                        if wb not in merged:
+                            merged.append(wb)
+                    workbooks = merged
                 update_dataset_counts(
-                    dataset_id, counts[0], counts[1], counts[2],
-                    [item["name"] for item in fingerprints],
+                    dataset_id, counts[0], counts[1], counts[2], workbooks,
                 )
             else:
                 insert_dataset({
@@ -215,6 +229,19 @@ def _drop_dataset_data(dataset_id: str) -> None:
                 "kg_node", "kg_relationship", "domain_record", "kg_identifier",
                 "import_issue", "load_summary", "graph_analysis", "source_file",
             ):
+                conn.execute(f"DELETE FROM {table}")
+    except Exception:
+        pass
+
+
+def _clear_dashboard_data(dataset_id: str) -> None:
+    """Mode tambah: kosongkan hanya tabel dashboard/audit sebelum ingest batch baru.
+    Tabel ini dihitung ulang ETL per-batch, jadi kalau tidak dibersihkan angka RU
+    akan berlipat (analysis_name yang sama muncul berkali-kali). Node/relasi/domain
+    tetap dipertahankan agar upload sebelumnya tidak hilang."""
+    try:
+        with scoped(dataset_id) as conn:
+            for table in ("graph_analysis", "load_summary", "import_issue"):
                 conn.execute(f"DELETE FROM {table}")
     except Exception:
         pass
