@@ -68,6 +68,8 @@ class ChunkedFileInfo(BaseModel):
 class ChunkedInitRequest(BaseModel):
     name: str = "Knowledge Graph Dataset"
     files: list[ChunkedFileInfo]
+    mode: str = "csv"  # "csv" | "etl"
+    existing_dataset_id: str | None = None
 
 
 import threading as _threading
@@ -235,6 +237,8 @@ def init_chunked_upload(payload: ChunkedInitRequest):
         _CHUNK_SESSIONS[upload_id] = {
             "name": payload.name,
             "dir": str(session_dir),
+            "mode": payload.mode,
+            "existing_dataset_id": payload.existing_dataset_id,
             "files": {f.name: {"total_chunks": f.total_chunks, "received": set()} for f in payload.files},
         }
     return {"upload_id": upload_id}
@@ -283,6 +287,11 @@ def commit_chunked_upload(upload_id: str):
                 out.write(part.read_bytes())
                 part.unlink(missing_ok=True)
     try:
+        mode = session.get("mode", "csv")
+        if mode == "etl":
+            excel_paths = [session_dir / fn for fn in session["files"]]
+            existing = session.get("existing_dataset_id")
+            return start_etl_import(session["name"], excel_paths, existing_dataset_id=existing).public()
         return start_chunked_import(session["name"], session_dir).public()
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
