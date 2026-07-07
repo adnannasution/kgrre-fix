@@ -399,8 +399,14 @@ function EtlUploadPanel({ name: datasetName, onNavigate, datasets, onRefreshData
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string>()
-  // Tujuan upload: dataset baru atau tambah ke dataset yang sudah ada
+  // Tujuan upload: default ke dataset terakhir jika ada, baru jika belum ada dataset
   const [target, setTarget] = useState<string>('__new__')
+  useEffect(() => {
+    if (datasets.length > 0) {
+      const latest = [...datasets].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+      setTarget(latest.id)
+    }
+  }, [datasets.length])
 
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.status)) return
