@@ -288,10 +288,14 @@ def commit_chunked_upload(upload_id: str):
                 part.unlink(missing_ok=True)
     try:
         mode = session.get("mode", "csv")
-        if mode == "etl":
+        if mode in ("etl", "etl_append"):
             excel_paths = [session_dir / fn for fn in session["files"]]
             existing = session.get("existing_dataset_id")
-            return start_etl_import(session["name"], excel_paths, existing_dataset_id=existing).public()
+            return start_etl_import(
+                session["name"], excel_paths,
+                existing_dataset_id=existing,
+                append=(mode == "etl_append"),
+            ).public()
         return start_chunked_import(session["name"], session_dir).public()
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

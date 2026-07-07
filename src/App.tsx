@@ -2508,6 +2508,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
   const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
   const [fileLoading, setFileLoading] = useState<string | null>(null)
   const [syncTarget, setSyncTarget] = useState<DatasetSummary | null>(null)
+  const [syncMode, setSyncMode] = useState<'replace' | 'append'>('replace')
   const [syncing, setSyncing] = useState(false)
   const [syncJob, setSyncJob] = useState<ImportJob | null>(null)
   const syncInputRef = useRef<HTMLInputElement>(null)
@@ -2583,8 +2584,9 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
     }
   }
 
-  const startSync = (dataset: DatasetSummary) => {
+  const startSync = (dataset: DatasetSummary, mode: 'replace' | 'append' = 'replace') => {
     setSyncTarget(dataset)
+    setSyncMode(mode)
     setSyncJob(null)
     setTimeout(() => syncInputRef.current?.click(), 50)
   }
@@ -2603,7 +2605,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
       const { upload_id } = await api.initChunkedUpload(
         syncTarget.name,
         entries.map(en => ({ name: en.name, total_chunks: en.total_chunks })),
-        'etl',
+        syncMode === 'append' ? 'etl_append' : 'etl',
         syncTarget.id,
       )
       for (const entry of entries) {
@@ -2747,6 +2749,27 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                           ) : (
                             <span className="dm-no-files">Tidak ada file yang tercatat.</span>
                           )}
+                          <div className="dm-sync-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px', alignItems: 'center' }}>
+                            <button
+                              className="secondary small"
+                              disabled={syncing}
+                              onClick={() => startSync(dataset, 'append')}
+                              title="Upload file Excel domain tambahan — data lama dipertahankan, hanya menambah node/relasi baru. Jalankan Rebuild Relasi setelah semua file masuk."
+                            >
+                              ➕ Tambah data (gabung)
+                            </button>
+                            <button
+                              className="secondary small"
+                              disabled={syncing}
+                              onClick={() => startSync(dataset, 'replace')}
+                              title="Ganti seluruh isi dataset dengan file Excel baru (data lama dihapus)."
+                            >
+                              🔄 Upload ulang (timpa semua)
+                            </button>
+                            <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                              Tambah data = upload domain satu per satu tanpa menghapus yang lama, lalu klik <b>Rebuild Relasi</b>.
+                            </span>
+                          </div>
                         </div>
                       </td>
                     </tr>
