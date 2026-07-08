@@ -1720,35 +1720,44 @@ def analysis(dataset_id: str, name: str, limit: int = Query(200, ge=1, le=2000))
         connection.close()
 
 
+# Kolom equipment_raw untuk domain yang menggunakan nama kolom berbeda
+_EQ_COL_OVERRIDE: dict[str, str] = {
+    'EQUIPMENT_HAS_BAD_ACTOR':        'tag_raw',
+    'EQUIPMENT_HAS_MONITORING_OPERASI': 'equipment_process_raw',
+    'EQUIPMENT_HAS_ATG':              'tag_tangki',
+}
+
+def _discover_domains(connection) -> list[tuple[str, str, str]]:
+    """Auto-discover semua domain non-SAP dari EQUIPMENT_HAS_* relationships.
+    Return: list of (node_type, rel_type, eq_col)"""
+    discovered = rows(connection, """
+        SELECT DISTINCT r.relationship_type, dn.node_type
+        FROM kg_relationship r
+        JOIN kg_node dn ON dn.node_id = r.target_node_id
+        WHERE r.relationship_type LIKE 'EQUIPMENT_HAS_%%'
+          AND NOT r.is_candidate
+        ORDER BY dn.node_type
+    """)
+    result = []
+    for d in discovered:
+        rel_type = d['relationship_type']
+        node_type = d['node_type']
+        eq_col = _EQ_COL_OVERRIDE.get(rel_type, 'equipment_raw')
+        result.append((node_type, rel_type, eq_col))
+    return result
+
+
 @app.get("/api/datasets/{dataset_id}/equipment-coverage")
 def equipment_coverage(dataset_id: str):
     """Coverage penulisan equipment di laporan non-SAP per domain per RU.
-    Menghitung berapa node domain yang punya relasi ke master equipment (cocok)
-    vs yang tidak punya relasi (kemungkinan typo / kode salah)."""
+    Auto-discover semua EQUIPMENT_HAS_* dari dataset — tidak hardcode."""
     get_dataset(dataset_id)
     connection = db_for(dataset_id)
     try:
-        connection.execute("SET LOCAL statement_timeout = '30s'")
-        # Domain non-SAP yang dimonitor + kolom equipment_raw-nya
-        DOMAINS = [
-            ('reliability_observation', 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
-            ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
-            ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
-            ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
-            ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
-            ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
-            ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
-            ('readiness_tank',          'EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
-            ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
-            ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
-            ('monitoring_operasi',      'EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_process_raw'),
-            ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
-            ('atg',                     'EQUIPMENT_HAS_ATG',                     'tag_tangki'),
-            ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
-        ]
+        connection.execute("SET LOCAL statement_timeout = '60s'")
+        domains = _discover_domains(connection)
         result = []
-        for domain_type, rel_type, eq_col in DOMAINS:
-            # Hitung per RU: total node, yang punya relasi ke equipment (matched)
+        for domain_type, rel_type, eq_col in domains:
             domain_rows = rows(connection, f"""
                 SELECT
                     coalesce(dn.properties_json->>'refinery_unit', 'Tidak diketahui') AS ru,
@@ -1771,7 +1780,6 @@ def equipment_coverage(dataset_id: str):
                     "eq_col": eq_col,
                     "rows": domain_rows,
                 })
-
         return result
     finally:
         connection.close()
@@ -1779,28 +1787,25 @@ def equipment_coverage(dataset_id: str):
 
 @app.get("/api/datasets/{dataset_id}/equipment-coverage/{domain}/unmatched")
 def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", limit: int = Query(200, ge=1, le=1000)):
-    """List nilai equipment_raw yang tidak cocok ke master equipment, diurutkan dari paling sering."""
+    """List nilai equipment_raw yang tidak sama dengan master equipment, diurutkan dari paling sering."""
     get_dataset(dataset_id)
-    # Cari rel_type & eq_col untuk domain ini
-    DOMAIN_MAP = {
-        'reliability_observation': ('EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
-        'rkap_program':            ('EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
-        'icu_issue':               ('EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
-        'equipment_issue':         ('EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
-        'readiness_record':        ('EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
-        'readiness_jetty':         ('EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
-        'readiness_spm':           ('EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
-        'readiness_tank':          ('EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
-        'bad_actor':               ('EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
-        'critical_equipment':      ('EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
-        'monitoring_operasi':      ('EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_process_raw'),
-        'rotor':                   ('EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
-        'atg':                     ('EQUIPMENT_HAS_ATG',                     'tag_tangki'),
-        'zero_clamp':              ('EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
-    }
-    if domain not in DOMAIN_MAP:
-        raise HTTPException(400, "Domain tidak dikenal.")
-    rel_type, eq_col = DOMAIN_MAP[domain]
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '20s'")
+        # Cari rel_type & eq_col untuk domain ini secara dinamis
+        domain_info = rows(connection, """
+            SELECT DISTINCT r.relationship_type
+            FROM kg_relationship r
+            JOIN kg_node dn ON dn.node_id = r.target_node_id
+            WHERE dn.node_type = %s
+              AND r.relationship_type LIKE 'EQUIPMENT_HAS_%%'
+              AND NOT r.is_candidate
+            LIMIT 1
+        """, [domain])
+        if not domain_info:
+            raise HTTPException(400, "Domain tidak dikenal atau belum ada relasi.")
+        rel_type = domain_info[0]['relationship_type']
+        eq_col = _EQ_COL_OVERRIDE.get(rel_type, 'equipment_raw')
     connection = db_for(dataset_id)
     try:
         connection.execute("SET LOCAL statement_timeout = '20s'")
