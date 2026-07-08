@@ -2996,7 +2996,21 @@ const DOMAIN_LABELS: Record<string, string> = {
   monitoring_operasi:      'Monitoring Operasi',
   rotor:                   'Rotor',
   atg:                     'ATG',
+  atg_program:             'ATG Program',
   zero_clamp:              'Zero Clamp',
+  power_steam:             'Power Steam',
+  paf_issue:               'PAF Issue',
+  paf:                     'PAF',
+  tkdn:                    'TKDN',
+  oa_availability:         'OA Availability',
+  plo_permit:              'PLO Permit',
+  pipeline_inspection:     'Pipeline Inspection',
+  rcps:                    'RCPS',
+}
+
+function domainLabel(domain: string): string {
+  return DOMAIN_LABELS[domain] ??
+    domain.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
 function coverageColor(pct: number) {
@@ -3116,7 +3130,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
           {aggregated.map(d => (
             <div key={d.domain} className="coverage-card">
               <div className="coverage-card-header">
-                <span className="coverage-card-title">{DOMAIN_LABELS[d.domain] ?? d.domain}</span>
+                <span className="coverage-card-title">{domainLabel(d.domain)}</span>
                 <span className={`coverage-card-badge ${coverageColor(d.pct)}`}>{d.pct}%</span>
               </div>
               <div className="coverage-card-bar-row">
@@ -3148,7 +3162,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
             <div className="cov-modal-header">
               <div>
                 <div className="cov-modal-title">
-                  {DOMAIN_LABELS[sheet.domain] ?? sheet.domain}
+                  {domainLabel(sheet.domain)}
                   {sheet.ru && sheet.ru !== 'Semua' && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {sheet.ru}</span>}
                 </div>
                 <div className="cov-modal-sub">Penulisan equipment di laporan yang berbeda dari master data</div>
