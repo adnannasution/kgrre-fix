@@ -1581,7 +1581,7 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         UPDATE work_order_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE work_order_stage.refinery_unit = e.refinery_unit
-          AND norm_code(work_order_stage.equipment_clean) = norm_code(e.equipment_code_raw)
+          AND norm_code(work_order_stage.equipment_clean) = norm_code(regexp_replace(trim(e.equipment_code_raw), '/[0-9]+$', ''))
           AND work_order_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
@@ -1690,7 +1690,7 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
         UPDATE notification_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE notification_stage.refinery_unit = e.refinery_unit
-          AND norm_code(notification_stage.equipment_clean) = norm_code(e.equipment_code_raw)
+          AND norm_code(notification_stage.equipment_clean) = norm_code(regexp_replace(trim(e.equipment_code_raw), '/[0-9]+$', ''))
           AND notification_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
