@@ -2,6 +2,7 @@ import type {
   DatasetStats,
   DatasetSummary,
   Equipment360,
+  EquipmentCoverageDomain,
   FolderScan,
   GraphEdgeDetail,
   GraphNode,
@@ -15,6 +16,7 @@ import type {
   ReliabilityInsight,
   RuSummary,
   SchemaBundle,
+  UnmatchedEquipment,
 } from '../types'
 
 const API = '/api'
@@ -123,6 +125,9 @@ export const api = {
   reliabilityInsight: (id: string) => request<ReliabilityInsight>(`/datasets/${id}/insights/reliability`),
   analysis: (id: string, name: string) => request<Record<string, unknown>[]>(`/datasets/${id}/analysis/${name}`),
   exportUrl: (id: string, kind: string) => `${API}/datasets/${id}/export/${kind}`,
+  equipmentCoverage: (id: string) => request<EquipmentCoverageDomain[]>(`/datasets/${id}/equipment-coverage`),
+  equipmentCoverageUnmatched: (id: string, domain: string, ru = '', limit = 200) =>
+    request<UnmatchedEquipment[]>(`/datasets/${id}/equipment-coverage/${domain}/unmatched?${new URLSearchParams({ ru, limit: String(limit) })}`),
 }
 
 export async function streamDiagnosis(

@@ -263,3 +263,23 @@ export interface ReliabilityInsight {
   reliability_trend: Record<string, unknown>[]
   computing?: boolean
 }
+
+export interface EquipmentCoverageRow {
+  ru: string
+  total: number
+  matched: number
+  unmatched: number
+}
+
+export interface EquipmentCoverageDomain {
+  domain: string
+  rel_type: string
+  eq_col: string
+  rows: EquipmentCoverageRow[]
+}
+
+export interface UnmatchedEquipment {
+  equipment_raw_value: string
+  ru: string
+  jumlah: number
+}
