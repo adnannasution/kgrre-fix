@@ -1537,7 +1537,10 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     ord_expr = _cs(c, 'order_no', 'aufnr', 'order', 'order_number', 'maint_order', cast=True, default='NULL')
     notif_expr = _cs(c, 'notification_no', 'notification', 'notif', 'qmnum', cast=True, default='NULL')
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant', default='NULL')})"
+    # Location lebih reliable dari maintplant untuk RU; strip /00 suffix dari equipment
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','location','plant','maintplant', default='NULL')})"
+    eq_raw_wo = _cs(c, 'equipment', default='NULL')
+    eq_clean_wo = f"regexp_replace(trim({eq_raw_wo}), '/[0-9]+$', '')" if eq_raw_wo != 'NULL' else 'NULL'
     con.execute(f"""
         CREATE TABLE work_order_stage AS
         SELECT
@@ -1549,11 +1552,12 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
             {_cs(c, 'priority','priok')} AS priority,
             {_cs(c, 'user_status','txt04','ustatus')} AS user_status,
             {_cs(c, 'system_status','sttxt')} AS system_status,
-            {_cs(c, 'basic_start','actual_start','gstrp','req_start', cast=True)} AS reference_date,
+            {_cs(c, 'basic_start','actual_start','gstrp','req_start','basic_start_date', cast=True)} AS reference_date,
             {_cs(c, 'total_planned_costs','geplk','planned_cost', cast=True, default="'0'")} AS planned_cost,
             {_cs(c, 'total_actual_costs','istko','actual_cost', cast=True, default="'0'")} AS actual_cost,
             {_cs(c, 'main_work_center','main_workcenter','arbpl','work_center','workcenter','main_workctr')} AS work_center,
-            {_cs(c, 'equipment')} AS equipment_raw,
+            {eq_raw_wo} AS equipment_raw,
+            {eq_clean_wo} AS equipment_clean,
             coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
             _input_source_sheet AS source_sheet,
@@ -1572,8 +1576,8 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         UPDATE work_order_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE work_order_stage.refinery_unit = e.refinery_unit
-          AND norm_code(work_order_stage.equipment_raw) = norm_code(e.equipment_code_raw)
-          AND work_order_stage.equipment_raw IS NOT NULL;
+          AND norm_code(work_order_stage.equipment_clean) = norm_code(e.equipment_code_raw)
+          AND work_order_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
         INSERT INTO node_raw
@@ -1643,7 +1647,11 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     notif_expr = _cs(c, 'notification_no', 'qmnum', 'notif_no', 'notification', 'notif', cast=True, default='NULL')
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant', default='NULL')})"
+    # Location (RU2-ITP/RU2-HOC) lebih reliable dari maintplant (6201)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','location','plant','maintplant', default='NULL')})"
+    # Equipment SAP notif sering punya suffix /00 — strip sebelum norm_code
+    eq_raw = _cs(c, 'equipment', default='NULL')
+    eq_clean = f"regexp_replace(trim({eq_raw}), '/[0-9]+$', '')" if eq_raw != 'NULL' else 'NULL'
     con.execute(f"""
         CREATE TABLE notification_stage AS
         SELECT
@@ -1657,7 +1665,8 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
             {_cs(c, 'notification_date','malfunction_start','reported_on', cast=True)} AS notif_date,
             {_cs(c, 'malfunction_end','end_date', cast=True)} AS end_date,
             {_cs(c, 'breakdown','breakdown_indicator')} AS breakdown,
-            {_cs(c, 'equipment')} AS equipment_raw,
+            {eq_raw} AS equipment_raw,
+            {eq_clean} AS equipment_clean,
             {_cs(c, 'functional_loc','functional_location','floc')} AS functional_loc,
             coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
             _input_source_file AS source_file,
@@ -1677,8 +1686,8 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
         UPDATE notification_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE notification_stage.refinery_unit = e.refinery_unit
-          AND norm_code(notification_stage.equipment_raw) = norm_code(e.equipment_code_raw)
-          AND notification_stage.equipment_raw IS NOT NULL;
+          AND norm_code(notification_stage.equipment_clean) = norm_code(e.equipment_code_raw)
+          AND notification_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
         INSERT INTO node_raw
