@@ -105,6 +105,7 @@ export interface ImportJob {
   message: string
   dataset_id?: string
   error?: string
+  warnings?: string[]
   started_at: number
   finished_at?: number
 }

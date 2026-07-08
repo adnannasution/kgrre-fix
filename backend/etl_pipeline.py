@@ -3168,10 +3168,10 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
 
         job.progress = 88
         job.phase = "Import ke database"
-        warn_str = (" | Peringatan: " + "; ".join(build_warnings)) if build_warnings else ""
+        job.warnings = build_warnings
         job.message = (
             f"ETL selesai: {counts['nodes']:,} node, {counts['relationships']:,} relasi, "
-            f"{counts['candidates']:,} kandidat, {counts['unmatched']:,} tidak cocok{warn_str}"
+            f"{counts['candidates']:,} kandidat, {counts['unmatched']:,} tidak cocok"
         )
 
         # Trigger existing import pipeline
