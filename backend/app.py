@@ -423,7 +423,7 @@ def rebuild_relationships(dataset_id: str):
             ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
             ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
             ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
-            ('monitoring_operasi',      'EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_raw'),
+            # monitoring_operasi pakai equipment_process_raw/equipment_sts_raw — handled below
             ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
             ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
         ]:
@@ -443,6 +443,27 @@ def rebuild_relationships(dataset_id: str):
                     = regexp_replace(trim(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', '')
                   AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
                   AND trim(coalesce(dn.properties_json->>'{eq_prop}','')) != ''
+                ON CONFLICT DO NOTHING
+            """)
+
+        # Monitoring Operasi: join via equipment_process_raw atau equipment_sts_raw
+        for mo_prop in ('equipment_process_raw', 'equipment_sts_raw'):
+            connection.execute(f"""
+                INSERT INTO kg_relationship
+                    (relationship_id, source_node_id, target_node_id,
+                     relationship_type, properties_json, is_candidate, confidence)
+                SELECT DISTINCT
+                    'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_MONITORING_OPERASI|' || dn.node_id),
+                    eq.node_id, dn.node_id,
+                    'EQUIPMENT_HAS_MONITORING_OPERASI',
+                    '{{}}'::jsonb, false, 1.0
+                FROM kg_node eq, kg_node dn
+                WHERE eq.node_type = 'equipment'
+                  AND dn.node_type = 'monitoring_operasi'
+                  AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                    = regexp_replace(trim(coalesce(dn.properties_json->>'{mo_prop}','')), '/[0-9]+$', '')
+                  AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
+                  AND trim(coalesce(dn.properties_json->>'{mo_prop}','')) != ''
                 ON CONFLICT DO NOTHING
             """)
 
