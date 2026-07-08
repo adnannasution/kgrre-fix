@@ -3516,12 +3516,13 @@ def _fmt_int(v) -> str:
 
 
 def _gather_ru_ctx(connection, ru: str) -> dict:
+    ru_like = f'%{ru}%'
     eq = rows(connection, """
         SELECT count(*) AS total,
                count(DISTINCT properties_json->>'equipment_type') AS types
         FROM kg_node WHERE node_type='equipment'
           AND properties_json->>'refinery_unit' ILIKE %s
-    """, [f'%{ru}%'])
+    """, [ru_like])
     top_eq = rows(connection, """
         SELECT n.label, n.business_key,
                n.properties_json->>'equipment_type' AS eq_type,
@@ -3531,12 +3532,12 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         WHERE n.node_type='equipment' AND n.properties_json->>'refinery_unit' ILIKE %s
         GROUP BY n.node_id, n.label, n.business_key, eq_type
         ORDER BY rel_count DESC LIMIT 15
-    """, [f'%{ru}%'])
+    """, [ru_like])
     domain_counts: dict = {}
     for domain in ['reliability_observation','rkap_program','equipment_issue','icu_issue',
                    'bad_actor','critical_equipment','readiness_record','monitoring_operasi',
                    'power_steam','paf_issue','rotor','atg','zero_clamp']:
-        r = rows(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type=%s AND properties_json->>'refinery_unit' ILIKE %s", [domain, f'%{ru}%'])
+        r = rows(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type=%s AND properties_json->>'refinery_unit' ILIKE %s", [domain, ru_like])
         if r and int(r[0]['c']) > 0:
             domain_counts[domain] = int(r[0]['c'])
     rel_obs = rows(connection, """
@@ -3546,7 +3547,7 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
                avg(CASE WHEN properties_json->>'mttr' ~ '^[0-9]' THEN (properties_json->>'mttr')::float END) AS avg_mttr
         FROM kg_node WHERE node_type='reliability_observation'
           AND properties_json->>'refinery_unit' ILIKE %s
-    """, [f'%{ru}%'])
+    """, [ru_like])
     rkap = rows(connection, """
         SELECT count(*) AS total,
                sum(CASE WHEN (properties_json->>'derived_is_delayed')='true' THEN 1 ELSE 0 END) AS delayed,
@@ -3554,13 +3555,75 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
                    THEN (properties_json->>'derived_planned_cost')::float ELSE 0 END) AS budget
         FROM kg_node WHERE node_type='rkap_program'
           AND properties_json->>'refinery_unit' ILIKE %s
-    """, [f'%{ru}%'])
+    """, [ru_like])
     bad = rows(connection, """
         SELECT properties_json->>'failure_mode' AS fm, count(*) AS c
         FROM kg_node WHERE node_type='bad_actor'
           AND properties_json->>'refinery_unit' ILIKE %s
         GROUP BY fm ORDER BY c DESC LIMIT 10
-    """, [f'%{ru}%'])
+    """, [ru_like])
+
+    # --- True knowledge-graph metrics (multi-hop traversal via kg_relationship) ---
+
+    # Equipment isolated in graph: no confirmed edges at all (zero graph coverage)
+    isolated = rows(connection, """
+        SELECT count(*) AS c
+        FROM kg_node n
+        WHERE n.node_type='equipment' AND n.properties_json->>'refinery_unit' ILIKE %s
+          AND NOT EXISTS (
+              SELECT 1 FROM kg_relationship r
+              WHERE r.source_node_id = n.node_id AND NOT r.is_candidate
+          )
+    """, [ru_like])
+
+    # Multi-domain intersection: equipment connected to 3+ distinct domain types
+    multi_domain = rows(connection, """
+        SELECT n.label, n.business_key,
+               count(DISTINCT r.relationship_type) AS domain_count,
+               string_agg(DISTINCT r.relationship_type, ', ' ORDER BY r.relationship_type) AS domains
+        FROM kg_node n
+        JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+        WHERE n.node_type='equipment' AND n.properties_json->>'refinery_unit' ILIKE %s
+        GROUP BY n.node_id, n.label, n.business_key
+        HAVING count(DISTINCT r.relationship_type) >= 3
+        ORDER BY domain_count DESC LIMIT 10
+    """, [ru_like])
+
+    # Cross-domain high-risk: equipment linked to BOTH bad_actor AND critical_equipment in the graph
+    high_risk_cross = rows(connection, """
+        SELECT n.label, n.business_key
+        FROM kg_node n
+        WHERE n.node_type='equipment' AND n.properties_json->>'refinery_unit' ILIKE %s
+          AND EXISTS (
+              SELECT 1 FROM kg_relationship r1
+              JOIN kg_node t1 ON t1.node_id = r1.target_node_id
+              WHERE r1.source_node_id = n.node_id AND NOT r1.is_candidate
+                AND t1.node_type = 'bad_actor'
+          )
+          AND EXISTS (
+              SELECT 1 FROM kg_relationship r2
+              JOIN kg_node t2 ON t2.node_id = r2.target_node_id
+              WHERE r2.source_node_id = n.node_id AND NOT r2.is_candidate
+                AND t2.node_type = 'critical_equipment'
+          )
+        LIMIT 15
+    """, [ru_like])
+
+    # Graph density: ratio equipment with >=1 confirmed edge vs total
+    total_eq = int((eq[0].get('total') or 0)) if eq else 0
+    isolated_count = int((isolated[0].get('c') or 0)) if isolated else 0
+    connected_count = total_eq - isolated_count
+
+    # Equipment with delayed RKAP traversed through graph edges
+    delayed_rkap_eq = rows(connection, """
+        SELECT count(DISTINCT n.node_id) AS c
+        FROM kg_node n
+        JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+        JOIN kg_node rk ON rk.node_id = r.target_node_id AND rk.node_type = 'rkap_program'
+        WHERE n.node_type='equipment' AND n.properties_json->>'refinery_unit' ILIKE %s
+          AND (rk.properties_json->>'derived_is_delayed') = 'true'
+    """, [ru_like])
+
     return {
         'ru': ru,
         'equipment': eq[0] if eq else {},
@@ -3569,6 +3632,16 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         'reliability': rel_obs[0] if rel_obs else {},
         'rkap': rkap[0] if rkap else {},
         'bad_actors': bad,
+        # KG-specific metrics
+        'kg': {
+            'total_equipment': total_eq,
+            'isolated_nodes': isolated_count,
+            'connected_nodes': connected_count,
+            'graph_coverage_pct': round(connected_count / total_eq * 100, 1) if total_eq else 0,
+            'multi_domain_equipment': multi_domain,
+            'high_risk_cross_domain': high_risk_cross,
+            'delayed_rkap_equipment_count': int((delayed_rkap_eq[0].get('c') or 0)) if delayed_rkap_eq else 0,
+        },
     }
 
 
@@ -3584,7 +3657,68 @@ def _gather_dataset_ctx(connection) -> dict:
         FROM kg_node WHERE node_type='equipment' AND properties_json->>'refinery_unit' IS NOT NULL
         GROUP BY ru ORDER BY c DESC LIMIT 10
     """)
-    return {'node_counts': counts, 'relationships': rels[0] if rels else {}, 'equipment_per_ru': eq_ru}
+
+    # --- True knowledge-graph metrics across the whole dataset ---
+
+    # Top equipment by degree centrality (most connections in graph)
+    top_degree = rows(connection, """
+        SELECT n.label, n.business_key,
+               n.properties_json->>'refinery_unit' AS ru,
+               count(r.relationship_id) AS degree
+        FROM kg_node n
+        JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+        WHERE n.node_type = 'equipment'
+        GROUP BY n.node_id, n.label, n.business_key, ru
+        ORDER BY degree DESC LIMIT 10
+    """)
+
+    # Relationship type distribution (which domains are richest in edges)
+    rel_type_dist = rows(connection, """
+        SELECT relationship_type, count(*) AS c
+        FROM kg_relationship WHERE NOT is_candidate
+        GROUP BY relationship_type ORDER BY c DESC LIMIT 15
+    """)
+
+    # Isolated equipment dataset-wide (zero confirmed edges)
+    isolated = rows(connection, """
+        SELECT count(*) AS c FROM kg_node n
+        WHERE n.node_type = 'equipment'
+          AND NOT EXISTS (
+              SELECT 1 FROM kg_relationship r
+              WHERE r.source_node_id = n.node_id AND NOT r.is_candidate
+          )
+    """)
+
+    # Total equipment count
+    total_eq_row = rows(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type='equipment'")
+    total_eq = int((total_eq_row[0].get('c') or 0)) if total_eq_row else 0
+    isolated_count = int((isolated[0].get('c') or 0)) if isolated else 0
+
+    # Multi-domain equipment (connected to 3+ distinct relationship types)
+    multi_domain_count = rows(connection, """
+        SELECT count(*) AS c FROM (
+            SELECT n.node_id
+            FROM kg_node n
+            JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+            WHERE n.node_type = 'equipment'
+            GROUP BY n.node_id
+            HAVING count(DISTINCT r.relationship_type) >= 3
+        ) sub
+    """)
+
+    return {
+        'node_counts': counts,
+        'relationships': rels[0] if rels else {},
+        'equipment_per_ru': eq_ru,
+        'kg': {
+            'total_equipment': total_eq,
+            'isolated_nodes': isolated_count,
+            'graph_coverage_pct': round((total_eq - isolated_count) / total_eq * 100, 1) if total_eq else 0,
+            'multi_domain_equipment_count': int((multi_domain_count[0].get('c') or 0)) if multi_domain_count else 0,
+            'top_degree_equipment': top_degree,
+            'relationship_type_distribution': rel_type_dist,
+        },
+    }
 
 
 def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
@@ -3638,10 +3772,19 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
         rel = ctx.get('reliability', {})
         rkap = ctx.get('rkap', {})
         bad = ctx.get('bad_actors', [])
+        kg = ctx.get('kg', {})
 
         top_eq_lines = '\n'.join(f"  {i+1}. {e.get('label','')} ({e.get('business_key','')}) — {e.get('rel_count',0)} relasi, tipe: {e.get('eq_type','')}" for i, e in enumerate(top_eq))
         domain_lines = '\n'.join(f"  - {k}: {_fmt_int(v)} baris" for k, v in domain_counts.items())
         bad_lines = '\n'.join(f"  - {b.get('fm','')}: {b.get('c','')}x" for b in bad[:8])
+        multi_dom_lines = '\n'.join(
+            f"  - {e.get('label','')} ({e.get('business_key','')}) → {e.get('domain_count','')} domain: {e.get('domains','')}"
+            for e in kg.get('multi_domain_equipment', [])[:8]
+        )
+        high_risk_lines = '\n'.join(
+            f"  - {e.get('label','')} ({e.get('business_key','')})"
+            for e in kg.get('high_risk_cross_domain', [])[:10]
+        )
 
         data_block = f"""
 ## Data Refinery Unit: {ru}
@@ -3649,8 +3792,20 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
 - Total equipment terdaftar: {_fmt_int(eq.get('total', 0))}
 - Jumlah tipe equipment: {_fmt_int(eq.get('types', 0))}
 
-### Top 15 Equipment Terkoneksi di Knowledge Graph
+### Metrik Knowledge Graph (Berbasis Traversal Graf)
+- Equipment terhubung dalam graf: {_fmt_int(kg.get('connected_nodes', 0))} dari {_fmt_int(kg.get('total_equipment', 0))} ({kg.get('graph_coverage_pct', 0)}%)
+- Equipment terisolasi (nol relasi di graf): {_fmt_int(kg.get('isolated_nodes', 0))} — ini adalah kesenjangan data yang tidak terlihat dari laporan biasa
+- Equipment terhubung di 3+ domain laporan sekaligus (multi-hop): {len(kg.get('multi_domain_equipment', []))}
+- Equipment yang punya program RKAP terlambat (ditelusuri melalui edges di graf): {_fmt_int(kg.get('delayed_rkap_equipment_count', 0))}
+
+### Equipment dengan Konektivitas Graf Tertinggi (Degree Centrality)
 {top_eq_lines or '  (tidak ada)'}
+
+### Equipment Konvergen di Multiple Domain (Lintas Laporan — Knowledge Graph Cross-Domain)
+{multi_dom_lines or '  (tidak ada — semua equipment hanya ada di ≤2 domain)'}
+
+### Equipment Risiko Tinggi Lintas Domain (Bad Actor + Critical — Ditemukan via Graph Traversal)
+{high_risk_lines or '  (tidak ada equipment yang terdeteksi di keduanya sekaligus)'}
 
 ### Volume Laporan per Domain
 {domain_lines or '  (tidak ada laporan)'}
@@ -3675,23 +3830,52 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
         nc = ctx.get('node_counts', [])
         rels = ctx.get('relationships', {})
         eq_ru = ctx.get('equipment_per_ru', [])
+        kg = ctx.get('kg', {})
         nc_lines = '\n'.join(f"  - {r.get('node_type','')}: {_fmt_int(r.get('c',0))}" for r in nc)
         eq_ru_lines = '\n'.join(f"  - {r.get('ru','')}: {_fmt_int(r.get('c',0))} equipment" for r in eq_ru)
+        top_deg_lines = '\n'.join(
+            f"  {i+1}. {e.get('label','')} ({e.get('business_key','')}, {e.get('ru','')}) — {e.get('degree',0)} koneksi"
+            for i, e in enumerate(kg.get('top_degree_equipment', []))
+        )
+        rel_type_lines = '\n'.join(
+            f"  - {r.get('relationship_type','')}: {_fmt_int(r.get('c',0))} edges"
+            for r in kg.get('relationship_type_distribution', [])
+        )
         data_block = f"""
 ## Overview Dataset Knowledge Graph
 ### Jumlah Node per Tipe
 {nc_lines}
 
-### Relasi
-- Total relasi terverifikasi: {_fmt_int(rels.get('total',0))}
+### Metrik Graf Dataset (Knowledge Graph Analytics)
+- Total relasi terverifikasi (edges): {_fmt_int(rels.get('total',0))}
 - Relasi kandidat (belum terverifikasi): {_fmt_int(rels.get('candidates',0))}
+- Total equipment: {_fmt_int(kg.get('total_equipment', 0))}
+- Equipment terhubung di graf: {_fmt_int(kg.get('total_equipment', 0) - kg.get('isolated_nodes', 0))} ({kg.get('graph_coverage_pct', 0)}%)
+- Equipment terisolasi (nol relasi): {_fmt_int(kg.get('isolated_nodes', 0))}
+- Equipment terhubung di 3+ domain sekaligus (multi-domain node): {_fmt_int(kg.get('multi_domain_equipment_count', 0))}
+
+### Distribusi Edge per Tipe Relasi (Domain Coverage di Graf)
+{rel_type_lines or '  (tidak ada)'}
+
+### Equipment dengan Degree Centrality Tertinggi di Seluruh Dataset
+(Equipment yang menjadi hub/pusat dalam network knowledge graph kilang)
+{top_deg_lines or '  (tidak ada)'}
 
 ### Distribusi Equipment per Refinery Unit
 {eq_ru_lines}
 """
         scope_desc = "seluruh dataset knowledge graph kilang"
 
-    return f"""Kamu adalah seorang ahli Asset Integrity & Reliability Engineering untuk kilang minyak dengan pengalaman 20 tahun. Kamu menganalisis data dari sistem knowledge graph kilang (KGRRE) yang mengintegrasikan berbagai laporan operasional: reliability observation, RKAP program, maintenance work order, notifikasi, readiness record, bad actor, critical equipment, monitoring operasi, dan lainnya.
+    return f"""Kamu adalah seorang ahli Asset Integrity & Reliability Engineering untuk kilang minyak dengan pengalaman 20 tahun. Kamu menganalisis data dari sistem knowledge graph kilang (KGRRE) — sebuah jaringan relasi antar entitas operasional yang menghubungkan equipment, laporan reliability, program RKAP, bad actor, readiness, monitoring, dan domain lainnya melalui edges (relasi terverifikasi) dan multi-hop traversal.
+
+PENTING: Data di bawah ini BUKAN sekadar agregasi SQL flat. Data ini adalah hasil analisis struktur jaringan (graph analytics), termasuk:
+- **Degree centrality**: equipment yang menjadi hub/pusat jaringan (banyak relasi)
+- **Multi-domain convergence**: equipment yang muncul sekaligus di 3+ laporan berbeda — tidak bisa dilihat dari tiap laporan secara terpisah
+- **Isolated node detection**: equipment yang tidak terhubung ke laporan apapun — gap yang tersembunyi
+- **Cross-domain risk**: equipment yang terdeteksi di bad actor DAN critical equipment secara bersamaan melalui traversal edges
+- **Graph coverage**: berapa persen equipment yang benar-benar terpantau dalam jaringan
+
+Gunakan wawasan graf ini sebagai keunggulan analisis dibanding laporan konvensional.
 
 ## Permintaan Analisis
 Lakukan {focus_desc} untuk {scope_desc}.
@@ -3703,24 +3887,24 @@ Berikan analisis narasi mendalam dalam Bahasa Indonesia yang dapat langsung digu
 Tulis analisis mendalam dengan struktur berikut:
 
 ### 1. Ringkasan Eksekutif
-Paragraf singkat (3-4 kalimat) kondisi keseluruhan berdasarkan data.
+Paragraf singkat (3-4 kalimat) kondisi keseluruhan berdasarkan data, sebutkan temuan kritis dari perspektif jaringan knowledge graph (degree centrality, isolated nodes, konvergensi multi-domain).
 
-### 2. Temuan Utama
-Poin-poin temuan paling signifikan dari data (minimal 4 poin, maksimal 8). Setiap poin harus spesifik, menyebut angka dari data, dan menjelaskan implikasinya.
+### 2. Temuan Utama dari Knowledge Graph
+Poin-poin temuan paling signifikan (minimal 4, maksimal 8). Prioritaskan temuan yang hanya bisa dilihat dari struktur jaringan (bukan laporan individual): equipment dengan konektivitas tinggi, gap data (isolated nodes), konvergensi risiko lintas domain. Setiap poin harus spesifik dengan angka dan implikasinya.
 
-### 3. Analisis Mendalam
-Narasi analitik 3-5 paragraf yang menjelaskan pola, keterkaitan antar domain, dan kondisi sesungguhnya di lapangan berdasarkan data knowledge graph.
+### 3. Analisis Mendalam: Pola Jaringan & Konvergensi Risiko
+Narasi analitik 3-5 paragraf yang menjelaskan: (a) pola konektivitas di jaringan, (b) equipment mana yang muncul di persimpangan banyak domain — dan apa artinya bagi operasional, (c) kesenjangan data yang terlihat dari isolated nodes, (d) keterkaitan antar domain yang tidak tampak dari laporan terpisah.
 
 ### 4. Risiko Prioritas
-Daftar 3-5 risiko utama yang harus segera ditangani, dengan penjelasan dampak potensialnya.
+Daftar 3-5 risiko utama, dengan penekanan pada risiko yang teridentifikasi melalui konvergensi multi-domain atau gap dalam jaringan knowledge graph.
 
 ### 5. Rekomendasi Aksi
-Rekomendasi konkret dan terurut prioritas (minimal 5), dengan mempertimbangkan data yang tersedia. Sertakan timeframe (jangka pendek <3 bulan, menengah 3-12 bulan, panjang >12 bulan).
+Rekomendasi konkret dan terurut prioritas (minimal 5). Sertakan timeframe (jangka pendek <3 bulan, menengah 3-12 bulan, panjang >12 bulan). Hubungkan rekomendasi dengan temuan spesifik dari jaringan.
 
 ### 6. Penutup
-Kalimat penutup yang menyatakan tingkat kepercayaan analisis berdasarkan kelengkapan data yang tersedia.
+Kalimat penutup yang menyatakan tingkat kepercayaan analisis berdasarkan kelengkapan data dan cakupan jaringan yang tersedia.
 
-Gunakan bahasa teknis yang tepat namun dapat dipahami manajemen. Jangan menyebutkan nama kolom database atau istilah teknis sistem. Fokus pada makna operasional dari setiap angka."""
+Gunakan bahasa teknis yang tepat namun dapat dipahami manajemen. Jangan menyebutkan nama kolom database, nama field teknis sistem, atau istilah pemrograman. Fokus pada makna operasional dari setiap angka dan pola jaringan."""
 
 
 @app.post("/api/datasets/{dataset_id}/analysis/generate")
