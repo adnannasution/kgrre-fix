@@ -1581,8 +1581,7 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         ALTER TABLE work_order_stage ADD COLUMN equipment_id VARCHAR;
         UPDATE work_order_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
-        WHERE work_order_stage.refinery_unit = e.refinery_unit
-          AND work_order_stage.equipment_clean = e.equipment_code_clean
+        WHERE work_order_stage.equipment_clean = e.equipment_code_clean
           AND work_order_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
@@ -1690,8 +1689,7 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
         ALTER TABLE notification_stage ADD COLUMN equipment_id VARCHAR;
         UPDATE notification_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
-        WHERE notification_stage.refinery_unit = e.refinery_unit
-          AND notification_stage.equipment_clean = e.equipment_code_clean
+        WHERE notification_stage.equipment_clean = e.equipment_code_clean
           AND notification_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
