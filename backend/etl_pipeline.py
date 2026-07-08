@@ -1579,11 +1579,15 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         WHERE order_code IS NOT NULL;
 
         ALTER TABLE work_order_stage ADD COLUMN equipment_id VARCHAR;
-        UPDATE work_order_stage SET equipment_id = e.equipment_id
-        FROM equipment_master e
-        WHERE work_order_stage.equipment_clean = e.equipment_code_clean
-          AND work_order_stage.equipment_clean IS NOT NULL;
     """)
+    has_eq = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name='equipment_master'").fetchone()[0]
+    if has_eq:
+        con.execute("""
+            UPDATE work_order_stage SET equipment_id = e.equipment_id
+            FROM equipment_master e
+            WHERE work_order_stage.equipment_clean = e.equipment_code_clean
+              AND work_order_stage.equipment_clean IS NOT NULL;
+        """)
     con.execute("""
         INSERT INTO node_raw
         SELECT DISTINCT wo_id, 'work_order', refinery_unit || '|' || order_code,
@@ -1687,11 +1691,15 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
         WHERE notif_code IS NOT NULL;
 
         ALTER TABLE notification_stage ADD COLUMN equipment_id VARCHAR;
-        UPDATE notification_stage SET equipment_id = e.equipment_id
-        FROM equipment_master e
-        WHERE notification_stage.equipment_clean = e.equipment_code_clean
-          AND notification_stage.equipment_clean IS NOT NULL;
     """)
+    has_eq = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name='equipment_master'").fetchone()[0]
+    if has_eq:
+        con.execute("""
+            UPDATE notification_stage SET equipment_id = e.equipment_id
+            FROM equipment_master e
+            WHERE notification_stage.equipment_clean = e.equipment_code_clean
+              AND notification_stage.equipment_clean IS NOT NULL;
+        """)
     con.execute("""
         INSERT INTO node_raw
         SELECT DISTINCT notif_id, 'notification', refinery_unit || '|' || notif_code,
