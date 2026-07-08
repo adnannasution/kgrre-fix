@@ -413,7 +413,7 @@ def rebuild_relationships(dataset_id: str):
             ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
             ('work_order',              'EQUIPMENT_HAS_WORK_ORDER',              'equipment_raw'),
             ('notification',            'EQUIPMENT_HAS_NOTIFICATION',            'equipment_raw'),
-            ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'equipment_raw'),
+            ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
             ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
             ('spm_workplan',            'EQUIPMENT_HAS_SPM_WORKPLAN',            'equipment_raw'),
             ('tank_workplan',           'EQUIPMENT_HAS_TANK_WORKPLAN',           'equipment_raw'),
@@ -422,7 +422,6 @@ def rebuild_relationships(dataset_id: str):
             ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
             ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
             ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
-            ('atg',                     'EQUIPMENT_HAS_ATG',                     'equipment_raw'),
             ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
             ('monitoring_operasi',      'EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_raw'),
             ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
@@ -447,6 +446,29 @@ def rebuild_relationships(dataset_id: str):
                 ON CONFLICT DO NOTHING
             """)
 
+        # ATG: join via tag_tangki (bukan equipment_raw)
+        connection.execute(f"""
+            INSERT INTO kg_relationship
+                (relationship_id, source_node_id, target_node_id,
+                 relationship_type, properties_json, is_candidate, confidence)
+            SELECT DISTINCT
+                'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_ATG|' || dn.node_id),
+                eq.node_id, dn.node_id,
+                'EQUIPMENT_HAS_ATG',
+                '{{}}'::jsonb, false, 1.0
+            FROM kg_node eq, kg_node dn
+            WHERE eq.node_type = 'equipment'
+              AND dn.node_type = 'atg'
+              AND (
+                regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                  = regexp_replace(trim(coalesce(dn.properties_json->>'tag_tangki','')), '/[0-9]+$', '')
+                OR regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                  = regexp_replace(trim(coalesce(dn.properties_json->>'tag_atg','')), '/[0-9]+$', '')
+              )
+              AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
+            ON CONFLICT DO NOTHING
+        """)
+
         # Cross-domain: antar laporan via equipment yang sama
         for src_type, tgt_type, rel_type in [
             ('critical_equipment', 'bad_actor',           'CRITICAL_EQUIPMENT_HAS_BAD_ACTOR'),
@@ -465,9 +487,9 @@ def rebuild_relationships(dataset_id: str):
                 FROM kg_node s, kg_node t
                 WHERE s.node_type = '{src_type}'
                   AND t.node_type = '{tgt_type}'
-                  AND regexp_replace(trim(coalesce(s.properties_json->>'equipment_raw','')), '/[0-9]+$', '')
-                    = regexp_replace(trim(coalesce(t.properties_json->>'equipment_raw','')), '/[0-9]+$', '')
-                  AND trim(coalesce(s.properties_json->>'equipment_raw','')) != ''
+                  AND regexp_replace(trim(coalesce(s.properties_json->>'equipment_raw', s.properties_json->>'tag_raw','')), '/[0-9]+$', '')
+                    = regexp_replace(trim(coalesce(t.properties_json->>'equipment_raw', t.properties_json->>'tag_raw','')), '/[0-9]+$', '')
+                  AND trim(coalesce(s.properties_json->>'equipment_raw', s.properties_json->>'tag_raw','')) != ''
                 ON CONFLICT DO NOTHING
             """)
 
