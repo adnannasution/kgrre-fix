@@ -362,7 +362,7 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
         <section className="panel">
           <PanelTitle title="Node landscape" subtitle="Tipe node aktual dari dataset" />
           <div className="type-list">
-            {stats?.node_types.slice(0, 10).map((item, index) => (
+            {stats?.node_types.map((item, index) => (
               <div key={item.node_type}><span className={`type-dot c${index % 6}`} /><span>{human(item.node_type)}</span><b>{format(item.count)}</b></div>
             ))}
           </div>
