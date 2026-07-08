@@ -256,7 +256,7 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
     if any(x in k for x in ("icu_database", "icu")):                 return "icu_issue"
     if "rcps" in stem:
         return "rcps_recommendation" if any(x in sheet_l for x in ("rekomendasi", "recommendation")) else "rcps"
-    if "oa_data" in stem or "oa_" in stem:
+    if "oa_data" in stem or "oa_" in stem or stem.startswith("oa ") or stem.startswith("oa data"):
         if any(x in sheet_l for x in ("allowance", "unplanned")):    return "oa_allowance"
         if any(x in sheet_l for x in ("issue", "permasalahan")):     return "oa_issue"
         return "oa_availability"
