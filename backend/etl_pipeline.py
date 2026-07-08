@@ -174,8 +174,12 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
             (has('notification_no', 'notif_no') and not has('aufnr', 'order_no', 'maint_order')):
         return 'notification'
 
-    # SAP Work Order — aufnr atau order_no + work_center (lebih spesifik dari maintenance_order lama)
-    if has('aufnr') or (has('order_no', 'maint_order') and has('work_center', 'main_work_center', 'main_workcenter', 'arbpl', 'main_workctr')):
+    # SAP Work Order — aufnr/order_no/order + work_center sinyal kuat
+    if has('aufnr') or (
+        has('order_no', 'maint_order', 'order') and
+        has('work_center', 'main_work_center', 'main_workcenter', 'arbpl', 'main_workctr') and
+        not has('qmnum', 'notifictn_type')  # jangan ambil notif
+    ):
         return 'work_order'
 
     # Equipment Master vs Maintenance Order — paling ambigu
