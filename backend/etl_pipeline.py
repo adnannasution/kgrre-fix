@@ -170,7 +170,8 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
         return 'org_issue'
 
     # SAP Notification (terpisah dari Work Order) — qmnum adalah kunci SAP notifikasi
-    if has('qmnum') or (has('notification_no', 'notif_no', 'notifictn_type') and not has('aufnr', 'order_no', 'maint_order')):
+    if has('qmnum') or has('notifictn_type') or \
+            (has('notification_no', 'notif_no') and not has('aufnr', 'order_no', 'maint_order')):
         return 'notification'
 
     # SAP Work Order — aufnr atau order_no + work_center (lebih spesifik dari maintenance_order lama)
@@ -202,11 +203,11 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if eq_score >= 5 and eq_score > mo_score:
         return 'equipment'
     if mo_score >= 5 and mo_score > eq_score:
-        return 'maintenance'
+        return 'work_order'
     if eq_score >= 4 and eq_score > mo_score + 2:
         return 'equipment'
     if mo_score >= 4 and mo_score > eq_score + 2:
-        return 'maintenance'
+        return 'work_order'
 
     return None
 
