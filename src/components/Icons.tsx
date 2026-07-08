@@ -20,3 +20,4 @@ export const CloseIcon = (p: Props) => <Icon {...p}><path d="m6 6 12 12M18 6 6 1
 export const CheckIcon = (p: Props) => <Icon {...p}><path d="m5 12 4 4L19 6"/></Icon>
 export const TrashIcon = (p: Props) => <Icon {...p}><path d="M4 7h16M9 7V4h6v3m-9 0 1 14h10l1-14M10 11v6m4-6v6"/></Icon>
 export const ChainIcon = (p: Props) => <Icon {...p}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></Icon>
+export const SparkleIcon = (p: Props) => <Icon {...p}><path d="M12 3v2m0 14v2M3 12h2m14 0h2m-3.22-6.78-1.42 1.42M6.64 17.36l-1.42 1.42m0-12.78 1.42 1.42m10.72 10.72 1.42 1.42"/><circle cx="12" cy="12" r="4"/></Icon>
