@@ -1765,12 +1765,12 @@ def equipment_coverage(dataset_id: str):
                 ORDER BY ru
             """)
             if domain_rows:
-                result.append({{
+                result.append({
                     "domain": domain_type,
                     "rel_type": rel_type,
                     "eq_col": eq_col,
                     "rows": domain_rows,
-                }})
+                })
 
         return result
     finally:
