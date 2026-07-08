@@ -3184,10 +3184,10 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
               <div className="chain-graph-wrap">
                 <GraphView
                   graph={graph}
-                  highlight={null}
-                  selectedNode={selectedNode}
-                  onSelectNode={setSelectedNode}
-                  showLabels
+                  rootId={graph.nodes[0]?.id ?? ''}
+                  selectedId={selectedNode?.id}
+                  onSelect={setSelectedNode}
+                  onSelectEdge={() => {}}
                 />
                 {selectedNode && (
                   <div className="chain-node-detail">
