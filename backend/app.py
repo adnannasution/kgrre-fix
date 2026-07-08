@@ -413,6 +413,20 @@ def rebuild_relationships(dataset_id: str):
             ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
             ('work_order',              'EQUIPMENT_HAS_WORK_ORDER',              'equipment_raw'),
             ('notification',            'EQUIPMENT_HAS_NOTIFICATION',            'equipment_raw'),
+            ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'equipment_raw'),
+            ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
+            ('spm_workplan',            'EQUIPMENT_HAS_SPM_WORKPLAN',            'equipment_raw'),
+            ('tank_workplan',           'EQUIPMENT_HAS_TANK_WORKPLAN',           'equipment_raw'),
+            ('jetty_workplan',          'EQUIPMENT_HAS_JETTY_WORKPLAN',          'equipment_raw'),
+            ('readiness_tank',          'EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
+            ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
+            ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
+            ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
+            ('atg',                     'EQUIPMENT_HAS_ATG',                     'equipment_raw'),
+            ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
+            ('monitoring_operasi',      'EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_raw'),
+            ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
+            ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
         ]:
             connection.execute(f"""
                 INSERT INTO kg_relationship
