@@ -246,15 +246,17 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
     if any(x in k for x in ("workplan_spm", "spm_workplan", "prokja_spm", "program_kerja_spm")):   return "spm_workplan"
     if any(x in k for x in ("workplan_tank", "tank_workplan", "prokja_tank", "program_kerja_tank", "program_kerja_tangki")): return "tank_workplan"
     if any(x in k for x in ("workplan_jetty", "jetty_workplan", "prokja_jetty", "program_kerja_jetty")): return "jetty_workplan"
-    if any(x in k for x in ("readiness_jetty", "jetty_readiness")):                                return "readiness_jetty"
-    if any(x in k for x in ("readiness_spm", "spm_readiness")):                                   return "readiness_spm"
-    if any(x in k for x in ("readiness_tank", "tank_readiness")):                                 return "readiness_tank"
+    if any(x in k for x in ("readiness_jetty", "jetty_readiness", "apr_jetty", "apr jetty")):     return "readiness_jetty"
+    if any(x in k for x in ("readiness_spm", "spm_readiness", "apr_spm", "apr spm")):             return "readiness_spm"
+    if any(x in k for x in ("readiness_tank", "tank_readiness", "readiness_tangki", "apr_tangki", "apr tangki", "apr_tank")): return "readiness_tank"
+    if any(x in k for x in ("atg_monitoring", "monitoring_atg")):                                 return "atg"
+    if any(x in k for x in ("program_kerja_atg", "atg_program", "prokja_atg")):                   return "atg_program"
     if "paf_issue" in k or ("paf" in stem and any(x in sheet_l for x in ("issue", "permasalahan"))): return "paf_issue"
     if any(x in k for x in ("issue_list",)):                          return "org_issue"
     if any(x in k for x in ("icu_database", "icu")):                 return "icu_issue"
     if "rcps" in stem:
         return "rcps_recommendation" if any(x in sheet_l for x in ("rekomendasi", "recommendation")) else "rcps"
-    if "oa_data" in stem or "oa_" in stem:
+    if "oa_data" in stem or "oa_" in stem or stem.startswith("oa ") or stem.startswith("oa data"):
         if any(x in sheet_l for x in ("allowance", "unplanned")):    return "oa_allowance"
         if any(x in sheet_l for x in ("issue", "permasalahan")):     return "oa_issue"
         return "oa_availability"
