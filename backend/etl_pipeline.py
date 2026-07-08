@@ -1575,8 +1575,8 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
     con.execute("""
         ALTER TABLE work_order_stage ADD COLUMN wo_id VARCHAR;
         UPDATE work_order_stage
-        SET wo_id = 'node_wo_' || md5(refinery_unit || '|' || order_code)
-        WHERE order_code IS NOT NULL AND refinery_unit IS NOT NULL;
+        SET wo_id = 'node_wo_' || md5(coalesce(refinery_unit, 'UNKNOWN') || '|' || order_code)
+        WHERE order_code IS NOT NULL;
 
         ALTER TABLE work_order_stage ADD COLUMN equipment_id VARCHAR;
         UPDATE work_order_stage SET equipment_id = e.equipment_id
@@ -1683,8 +1683,8 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
     con.execute("""
         ALTER TABLE notification_stage ADD COLUMN notif_id VARCHAR;
         UPDATE notification_stage
-        SET notif_id = 'node_notif_' || md5(refinery_unit || '|' || notif_code)
-        WHERE notif_code IS NOT NULL AND refinery_unit IS NOT NULL;
+        SET notif_id = 'node_notif_' || md5(coalesce(refinery_unit, 'UNKNOWN') || '|' || notif_code)
+        WHERE notif_code IS NOT NULL;
 
         ALTER TABLE notification_stage ADD COLUMN equipment_id VARCHAR;
         UPDATE notification_stage SET equipment_id = e.equipment_id
