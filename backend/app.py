@@ -1806,9 +1806,6 @@ def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", lim
             raise HTTPException(400, "Domain tidak dikenal atau belum ada relasi.")
         rel_type = domain_info[0]['relationship_type']
         eq_col = _EQ_COL_OVERRIDE.get(rel_type, 'equipment_raw')
-    connection = db_for(dataset_id)
-    try:
-        connection.execute("SET LOCAL statement_timeout = '20s'")
         ru_filter = "AND dn.properties_json->>'refinery_unit' = %s" if ru else ""
         params = [ru] if ru else []
         unmatched = rows(connection, f"""
