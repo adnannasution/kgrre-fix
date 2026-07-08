@@ -2695,9 +2695,11 @@ def _build_monitoring_operasi_nodes(con: duckdb.DuckDBPyConnection, views: list[
                    'design', design, 'minimal_capacity', minimal_capacity,
                    'plant_readiness', plant_readiness,
                    'type_limitasi_process', type_limitasi_process,
+                   'equipment_process_raw', equipment_process_raw,
                    'limitasi_alert_process', limitasi_alert_process,
                    'target_sts', target_sts, 'actual', actual,
                    'type_limitasi_sts', type_limitasi_sts,
+                   'equipment_sts_raw', equipment_sts_raw,
                    'limitasi_alert_sts', limitasi_alert_sts,
                    'month_update', month_update),
                source_file, source_sheet, source_row, source_record_id
