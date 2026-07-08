@@ -3031,7 +3031,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         con.execute("""
             CREATE TABLE IF NOT EXISTS equipment_master (
                 equipment_id VARCHAR, equipment_code_normalized VARCHAR,
-                equipment_code_raw VARCHAR, refinery_unit VARCHAR,
+                equipment_code_raw VARCHAR, equipment_code_clean VARCHAR, refinery_unit VARCHAR,
                 plant VARCHAR, functional_location VARCHAR,
                 equipment_group VARCHAR, equip_category VARCHAR,
                 description VARCHAR, criticallity VARCHAR,
