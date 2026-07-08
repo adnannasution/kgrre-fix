@@ -366,284 +366,203 @@ def _norm(expr: str) -> str:
 
 def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
     """Jalankan rebuild relasi di background thread."""
+    import time as _time
     try:
         job.status = "running"
         job.phase = "Menghapus relasi lama"
         job.progress = 5
         connection = db_for(dataset_id)
         try:
-        # Hapus relasi lama
-        connection.execute("DELETE FROM kg_relationship")
+            connection.execute("DELETE FROM kg_relationship")
 
-        rel_sql = """
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
-            ON CONFLICT DO NOTHING
-        """
-
-        def make_id(src: str, rel: str, tgt: str) -> str:
-            import hashlib
-            return "rel_" + hashlib.md5(f"{src}|{rel}|{tgt}".encode()).hexdigest()
-
-        # 1. RU → Equipment
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT
-                'rel_' || md5(ru.node_id || '|REFINERY_UNIT_HAS_EQUIPMENT|' || eq.node_id),
-                ru.node_id, eq.node_id,
-                'REFINERY_UNIT_HAS_EQUIPMENT',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node ru, kg_node eq
-            WHERE ru.node_type = 'refinery_unit'
-              AND eq.node_type = 'equipment'
-              AND ru.label = eq.properties_json->>'refinery_unit'
-            ON CONFLICT DO NOTHING
-        """)
-
-        # Helper: equipment → domain node matching by norm_code(equipment_code_raw)
-        for domain_type, rel_type, eq_prop in [
-            ('maintenance_order',       'EQUIPMENT_HAS_MAINTENANCE_ORDER',       'equipment_raw'),
-            ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
-            ('reliability_observation', 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
-            ('inspection',              'EQUIPMENT_HAS_INSPECTION',              'equipment_raw'),
-            ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
-            ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
-            ('work_order',              'EQUIPMENT_HAS_WORK_ORDER',              'equipment_raw'),
-            ('notification',            'EQUIPMENT_HAS_NOTIFICATION',            'equipment_raw'),
-            ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
-            ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
-            ('spm_workplan',            'EQUIPMENT_HAS_SPM_WORKPLAN',            'equipment_raw'),
-            ('tank_workplan',           'EQUIPMENT_HAS_TANK_WORKPLAN',           'equipment_raw'),
-            ('jetty_workplan',          'EQUIPMENT_HAS_JETTY_WORKPLAN',          'equipment_raw'),
-            ('readiness_tank',          'EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
-            ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
-            ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
-            ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
-            ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
-            # monitoring_operasi pakai equipment_process_raw/equipment_sts_raw — handled below
-            ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
-            ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
-        ]:
+            # 1. RU → Equipment
             connection.execute(f"""
                 INSERT INTO kg_relationship
                     (relationship_id, source_node_id, target_node_id,
                      relationship_type, properties_json, is_candidate, confidence)
-                SELECT DISTINCT
-                    'rel_' || md5(eq.node_id || '|{rel_type}|' || dn.node_id),
-                    eq.node_id, dn.node_id,
-                    '{rel_type}',
+                SELECT
+                    'rel_' || md5(ru.node_id || '|REFINERY_UNIT_HAS_EQUIPMENT|' || eq.node_id),
+                    ru.node_id, eq.node_id,
+                    'REFINERY_UNIT_HAS_EQUIPMENT',
                     '{{}}'::jsonb, false, 1.0
-                FROM kg_node eq, kg_node dn
-                WHERE eq.node_type = 'equipment'
-                  AND dn.node_type = '{domain_type}'
-                  AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                    = regexp_replace(trim(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', '')
-                  AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
-                  AND trim(coalesce(dn.properties_json->>'{eq_prop}','')) != ''
-                ON CONFLICT DO NOTHING
-            """)
-
-        # Monitoring Operasi: join via equipment_process_raw atau equipment_sts_raw
-        for mo_prop in ('equipment_process_raw', 'equipment_sts_raw'):
-            connection.execute(f"""
-                INSERT INTO kg_relationship
-                    (relationship_id, source_node_id, target_node_id,
-                     relationship_type, properties_json, is_candidate, confidence)
-                SELECT DISTINCT
-                    'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_MONITORING_OPERASI|' || dn.node_id),
-                    eq.node_id, dn.node_id,
-                    'EQUIPMENT_HAS_MONITORING_OPERASI',
-                    '{{}}'::jsonb, false, 1.0
-                FROM kg_node eq, kg_node dn
-                WHERE eq.node_type = 'equipment'
-                  AND dn.node_type = 'monitoring_operasi'
-                  AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                    = regexp_replace(trim(coalesce(dn.properties_json->>'{mo_prop}','')), '/[0-9]+$', '')
-                  AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
-                  AND trim(coalesce(dn.properties_json->>'{mo_prop}','')) != ''
-                ON CONFLICT DO NOTHING
-            """)
-
-        # ATG: join via tag_tangki (bukan equipment_raw)
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_ATG|' || dn.node_id),
-                eq.node_id, dn.node_id,
-                'EQUIPMENT_HAS_ATG',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node eq, kg_node dn
-            WHERE eq.node_type = 'equipment'
-              AND dn.node_type = 'atg'
-              AND (
-                regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                  = regexp_replace(trim(coalesce(dn.properties_json->>'tag_tangki','')), '/[0-9]+$', '')
-                OR regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                  = regexp_replace(trim(coalesce(dn.properties_json->>'tag_atg','')), '/[0-9]+$', '')
-              )
-              AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
-            ON CONFLICT DO NOTHING
-        """)
-
-        # Cross-domain: antar laporan via equipment yang sama
-        for src_type, tgt_type, rel_type in [
-            ('critical_equipment', 'bad_actor',           'CRITICAL_EQUIPMENT_HAS_BAD_ACTOR'),
-            ('zero_clamp',         'inspection',           'ZERO_CLAMP_HAS_INSPECTION'),
-            ('zero_clamp',         'pipeline_inspection',  'ZERO_CLAMP_HAS_PIPELINE_INSPECTION'),
-            ('power_steam',        'monitoring_operasi',   'POWER_STEAM_HAS_MONITORING_OPERASI'),
-        ]:
-            connection.execute(f"""
-                INSERT INTO kg_relationship
-                    (relationship_id, source_node_id, target_node_id,
-                     relationship_type, properties_json, is_candidate, confidence)
-                SELECT DISTINCT
-                    'rel_' || md5(s.node_id || '|{rel_type}|' || t.node_id),
-                    s.node_id, t.node_id, '{rel_type}',
-                    '{{}}'::jsonb, false, 1.0
-                FROM kg_node s, kg_node t
-                WHERE s.node_type = '{src_type}'
-                  AND t.node_type = '{tgt_type}'
-                  AND regexp_replace(trim(coalesce(s.properties_json->>'equipment_raw', s.properties_json->>'tag_raw','')), '/[0-9]+$', '')
-                    = regexp_replace(trim(coalesce(t.properties_json->>'equipment_raw', t.properties_json->>'tag_raw','')), '/[0-9]+$', '')
-                  AND trim(coalesce(s.properties_json->>'equipment_raw', s.properties_json->>'tag_raw','')) != ''
-                ON CONFLICT DO NOTHING
-            """)
-
-        # 2b. Plant / FLoc hierarki dari equipment master
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(ru.node_id || '|REFINERY_UNIT_HAS_PLANT|' || pl.node_id),
-                ru.node_id, pl.node_id, 'REFINERY_UNIT_HAS_PLANT',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node ru, kg_node pl
-            WHERE ru.node_type = 'refinery_unit' AND pl.node_type = 'plant'
-              AND ru.label = pl.properties_json->>'refinery_unit'
-            ON CONFLICT DO NOTHING
-        """)
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(pl.node_id || '|PLANT_HAS_EQUIPMENT|' || eq.node_id),
-                pl.node_id, eq.node_id, 'PLANT_HAS_EQUIPMENT',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node pl, kg_node eq
-            WHERE pl.node_type = 'plant' AND eq.node_type = 'equipment'
-              AND pl.label = eq.properties_json->>'plant'
-            ON CONFLICT DO NOTHING
-        """)
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(pl.node_id || '|PLANT_HAS_FUNCTIONAL_LOCATION|' || fl.node_id),
-                pl.node_id, fl.node_id, 'PLANT_HAS_FUNCTIONAL_LOCATION',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node pl, kg_node fl
-            WHERE pl.node_type = 'plant' AND fl.node_type = 'functional_location'
-              AND pl.label = fl.properties_json->>'plant'
-            ON CONFLICT DO NOTHING
-        """)
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(fl.node_id || '|FUNCTIONAL_LOCATION_HAS_EQUIPMENT|' || eq.node_id),
-                fl.node_id, eq.node_id, 'FUNCTIONAL_LOCATION_HAS_EQUIPMENT',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node fl, kg_node eq
-            WHERE fl.node_type = 'functional_location' AND eq.node_type = 'equipment'
-              AND fl.label = eq.properties_json->>'functional_location'
-            ON CONFLICT DO NOTHING
-        """)
-
-        # 2c. Notifikasi → Equipment
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_NOTIFICATION|' || mo.node_id),
-                eq.node_id, mo.node_id, 'EQUIPMENT_HAS_NOTIFICATION',
-                '{{}}'::jsonb, false, 0.9
-            FROM kg_node eq, kg_node mo
-            WHERE eq.node_type = 'equipment' AND mo.node_type = 'maintenance_order'
-              AND eq.properties_json->>'refinery_unit' = mo.properties_json->>'refinery_unit'
-              AND {_norm("eq.properties_json->>'equipment_code_raw'")}
-                = {_norm("mo.properties_json->>'equipment_raw'")}
-              AND mo.properties_json->>'order_raw' IS NULL
-              AND mo.properties_json->>'notification_raw' IS NOT NULL
-            ON CONFLICT DO NOTHING
-        """)
-
-        # 2d. Maintenance Order → Notification (order_raw cocok dgn notification_raw order lain)
-        connection.execute(f"""
-            INSERT INTO kg_relationship
-                (relationship_id, source_node_id, target_node_id,
-                 relationship_type, properties_json, is_candidate, confidence)
-            SELECT DISTINCT
-                'rel_' || md5(o.node_id || '|MAINTENANCE_ORDER_HAS_NOTIFICATION|' || n.node_id),
-                o.node_id, n.node_id, 'MAINTENANCE_ORDER_HAS_NOTIFICATION',
-                '{{}}'::jsonb, false, 1.0
-            FROM kg_node o, kg_node n
-            WHERE o.node_type = 'maintenance_order' AND n.node_type = 'maintenance_order'
-              AND o.node_id != n.node_id
-              AND o.properties_json->>'refinery_unit' = n.properties_json->>'refinery_unit'
-              AND {_norm("o.properties_json->>'notification_raw'")}
-                = {_norm("n.properties_json->>'order_raw'")}
-              AND {_norm("o.properties_json->>'notification_raw'")} != ''
-            ON CONFLICT DO NOTHING
-        """)
-
-        # RU → domain nodes (matching by refinery_unit label)
-        for domain_type, rel_type in [
-            ('rkap_program',            'REFINERY_UNIT_HAS_RKAP_PROGRAM'),
-            ('maintenance_order',        'REFINERY_UNIT_HAS_MAINTENANCE_ORDER'),
-            ('equipment_issue',         'REFINERY_UNIT_HAS_ISSUE'),
-            ('readiness_record',        'REFINERY_UNIT_HAS_READINESS_RECORD'),
-            ('oa_availability',         'REFINERY_UNIT_HAS_OA_AVAILABILITY'),
-            ('oa_issue',                'REFINERY_UNIT_HAS_OA_ISSUE'),
-            ('plo_permit',              'REFINERY_UNIT_HAS_PLO_PERMIT'),
-        ]:
-            connection.execute(f"""
-                INSERT INTO kg_relationship
-                    (relationship_id, source_node_id, target_node_id,
-                     relationship_type, properties_json, is_candidate, confidence)
-                SELECT DISTINCT
-                    'rel_' || md5(ru.node_id || '|{rel_type}|' || dn.node_id),
-                    ru.node_id, dn.node_id,
-                    '{rel_type}',
-                    '{{}}'::jsonb, false, 1.0
-                FROM kg_node ru, kg_node dn
+                FROM kg_node ru, kg_node eq
                 WHERE ru.node_type = 'refinery_unit'
-                  AND dn.node_type = '{domain_type}'
-                  AND ru.label = dn.properties_json->>'refinery_unit'
+                  AND eq.node_type = 'equipment'
+                  AND ru.label = eq.properties_json->>'refinery_unit'
                 ON CONFLICT DO NOTHING
             """)
 
-            counts = fetch_tuple(connection,
-                "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")
-            edge_count = counts[0]
+            job.progress = 20
+
+            # Equipment → domain nodes
+            for domain_type, rel_type, eq_prop in [
+                ('maintenance_order',       'EQUIPMENT_HAS_MAINTENANCE_ORDER',       'equipment_raw'),
+                ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
+                ('reliability_observation', 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
+                ('inspection',              'EQUIPMENT_HAS_INSPECTION',              'equipment_raw'),
+                ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
+                ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
+                ('work_order',              'EQUIPMENT_HAS_WORK_ORDER',              'equipment_raw'),
+                ('notification',            'EQUIPMENT_HAS_NOTIFICATION',            'equipment_raw'),
+                ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
+                ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
+                ('spm_workplan',            'EQUIPMENT_HAS_SPM_WORKPLAN',            'equipment_raw'),
+                ('tank_workplan',           'EQUIPMENT_HAS_TANK_WORKPLAN',           'equipment_raw'),
+                ('jetty_workplan',          'EQUIPMENT_HAS_JETTY_WORKPLAN',          'equipment_raw'),
+                ('readiness_tank',          'EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
+                ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
+                ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
+                ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
+                ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
+                ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
+                ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
+            ]:
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(eq.node_id || '|{rel_type}|' || dn.node_id),
+                        eq.node_id, dn.node_id, '{rel_type}',
+                        '{{}}'::jsonb, false, 1.0
+                    FROM kg_node eq, kg_node dn
+                    WHERE eq.node_type = 'equipment'
+                      AND dn.node_type = '{domain_type}'
+                      AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                        = regexp_replace(trim(coalesce(dn.properties_json->>'{{eq_prop}}','')), '/[0-9]+$', '')
+                      AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
+                      AND trim(coalesce(dn.properties_json->>'{{eq_prop}}','')) != ''
+                    ON CONFLICT DO NOTHING
+                """)
+
+            job.progress = 50
+
+            # Monitoring Operasi: dua kolom equipment
+            for mo_prop in ('equipment_process_raw', 'equipment_sts_raw'):
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_MONITORING_OPERASI|' || dn.node_id),
+                        eq.node_id, dn.node_id, 'EQUIPMENT_HAS_MONITORING_OPERASI',
+                        '{{}}'::jsonb, false, 1.0
+                    FROM kg_node eq, kg_node dn
+                    WHERE eq.node_type = 'equipment'
+                      AND dn.node_type = 'monitoring_operasi'
+                      AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                        = regexp_replace(trim(coalesce(dn.properties_json->>'{{mo_prop}}','')), '/[0-9]+$', '')
+                      AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
+                      AND trim(coalesce(dn.properties_json->>'{{mo_prop}}','')) != ''
+                    ON CONFLICT DO NOTHING
+                """)
+
+            # ATG: via tag_tangki / tag_atg
+            connection.execute(f"""
+                INSERT INTO kg_relationship
+                    (relationship_id, source_node_id, target_node_id,
+                     relationship_type, properties_json, is_candidate, confidence)
+                SELECT DISTINCT
+                    'rel_' || md5(eq.node_id || '|EQUIPMENT_HAS_ATG|' || dn.node_id),
+                    eq.node_id, dn.node_id, 'EQUIPMENT_HAS_ATG',
+                    '{{}}'::jsonb, false, 1.0
+                FROM kg_node eq, kg_node dn
+                WHERE eq.node_type = 'equipment'
+                  AND dn.node_type = 'atg'
+                  AND (
+                    regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                      = regexp_replace(trim(coalesce(dn.properties_json->>'tag_tangki','')), '/[0-9]+$', '')
+                    OR regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                      = regexp_replace(trim(coalesce(dn.properties_json->>'tag_atg','')), '/[0-9]+$', '')
+                  )
+                  AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
+                ON CONFLICT DO NOTHING
+            """)
+
+            job.progress = 65
+
+            # Cross-domain
+            for src_type, tgt_type, rel_type in [
+                ('critical_equipment', 'bad_actor',           'CRITICAL_EQUIPMENT_HAS_BAD_ACTOR'),
+                ('zero_clamp',         'inspection',           'ZERO_CLAMP_HAS_INSPECTION'),
+                ('zero_clamp',         'pipeline_inspection',  'ZERO_CLAMP_HAS_PIPELINE_INSPECTION'),
+                ('power_steam',        'monitoring_operasi',   'POWER_STEAM_HAS_MONITORING_OPERASI'),
+            ]:
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(s.node_id || '|{rel_type}|' || t.node_id),
+                        s.node_id, t.node_id, '{rel_type}',
+                        '{{}}'::jsonb, false, 1.0
+                    FROM kg_node s, kg_node t
+                    WHERE s.node_type = '{src_type}'
+                      AND t.node_type = '{tgt_type}'
+                      AND regexp_replace(trim(coalesce(s.properties_json->>'equipment_raw', s.properties_json->>'tag_raw','')), '/[0-9]+$', '')
+                        = regexp_replace(trim(coalesce(t.properties_json->>'equipment_raw', t.properties_json->>'tag_raw','')), '/[0-9]+$', '')
+                      AND trim(coalesce(s.properties_json->>'equipment_raw', s.properties_json->>'tag_raw','')) != ''
+                    ON CONFLICT DO NOTHING
+                """)
+
+            job.progress = 75
+
+            # Plant / FLoc hierarchy
+            for src_t, tgt_t, rel_t, join_col in [
+                ('refinery_unit', 'plant',               'REFINERY_UNIT_HAS_PLANT',               'refinery_unit'),
+                ('plant',         'equipment',           'PLANT_HAS_EQUIPMENT',                   'plant'),
+                ('plant',         'functional_location', 'PLANT_HAS_FUNCTIONAL_LOCATION',         'plant'),
+                ('functional_location', 'equipment',     'FUNCTIONAL_LOCATION_HAS_EQUIPMENT',     'functional_location'),
+            ]:
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(s.node_id || '|{rel_t}|' || t.node_id),
+                        s.node_id, t.node_id, '{rel_t}',
+                        '{{}}'::jsonb, false, 1.0
+                    FROM kg_node s, kg_node t
+                    WHERE s.node_type = '{src_t}' AND t.node_type = '{tgt_t}'
+                      AND s.label = t.properties_json->>'{{join_col}}'
+                    ON CONFLICT DO NOTHING
+                """)
+
+            job.progress = 85
+
+            # RU → domain nodes by refinery_unit
+            for domain_type, rel_type in [
+                ('rkap_program',      'REFINERY_UNIT_HAS_RKAP_PROGRAM'),
+                ('maintenance_order', 'REFINERY_UNIT_HAS_MAINTENANCE_ORDER'),
+                ('equipment_issue',   'REFINERY_UNIT_HAS_ISSUE'),
+                ('readiness_record',  'REFINERY_UNIT_HAS_READINESS_RECORD'),
+                ('oa_availability',   'REFINERY_UNIT_HAS_OA_AVAILABILITY'),
+                ('oa_issue',          'REFINERY_UNIT_HAS_OA_ISSUE'),
+                ('plo_permit',        'REFINERY_UNIT_HAS_PLO_PERMIT'),
+            ]:
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(ru.node_id || '|{rel_type}|' || dn.node_id),
+                        ru.node_id, dn.node_id, '{rel_type}',
+                        '{{}}'::jsonb, false, 1.0
+                    FROM kg_node ru, kg_node dn
+                    WHERE ru.node_type = 'refinery_unit'
+                      AND dn.node_type = '{domain_type}'
+                      AND ru.label = dn.properties_json->>'refinery_unit'
+                    ON CONFLICT DO NOTHING
+                """)
+
             job.progress = 95
-            job.phase = "Update katalog"
+            edge_count = fetch_tuple(connection,
+                "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")[0]
         finally:
             connection.close()
 
         from .config import update_dataset_counts
         update_dataset_counts(dataset_id, row["node_count"], edge_count, row["issue_count"], row["workbooks"])
-
         job.status = "completed"
         job.phase = "Selesai"
         job.progress = 100
@@ -652,9 +571,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
         job.status = "failed"
         job.error = str(exc)
     finally:
-        import time as _time
         job.finished_at = _time.time()
-
 
 @app.post("/api/datasets/{dataset_id}/rebuild-relationships")
 def rebuild_relationships(dataset_id: str):
