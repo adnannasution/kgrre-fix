@@ -477,6 +477,7 @@ def _build_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
             SELECT
                 norm_equipment({eq_raw}) AS equipment_code_normalized,
                 {eq_raw} AS equipment_code_raw,
+                regexp_replace(trim(cast(coalesce({eq_raw}, '') AS VARCHAR)), '/[0-9]+$', '') AS equipment_code_clean,
                 {plant_expr} AS plant,
                 coalesce(
                     {ru_expr},
@@ -677,7 +678,7 @@ def _build_maintenance_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
         UPDATE maintenance_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE maintenance_stage.refinery_unit = e.refinery_unit
-          AND norm_code(maintenance_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code(maintenance_stage.equipment_raw) = norm_code(e.equipment_code_clean)
           AND maintenance_stage.equipment_raw IS NOT NULL;
     """)
 
@@ -810,7 +811,7 @@ def _build_rkap_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
         UPDATE rkap_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE rkap_stage.refinery_unit = e.refinery_unit
-          AND norm_code(rkap_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code(rkap_stage.equipment_raw) = norm_code(e.equipment_code_clean)
           AND nullif(trim(rkap_stage.equipment_raw),'') IS NOT NULL;
     """)
 
@@ -881,7 +882,7 @@ def _build_rkap_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
              )) t(token)
         JOIN equipment_master e
           ON s.refinery_unit = e.refinery_unit
-         AND norm_code(token) = norm_code(e.equipment_code_raw)
+         AND norm_code(token) = norm_code(e.equipment_code_clean)
         WHERE s.equipment_id IS NULL AND length(norm_code(token)) >= 4
           AND s.program_id IS NOT NULL
     """)
@@ -923,7 +924,7 @@ def _build_reliability_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
         UPDATE reliability_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE reliability_stage.refinery_unit = e.refinery_unit
-          AND norm_code(reliability_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(reliability_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
 
     con.execute("""
@@ -1018,7 +1019,7 @@ def _build_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         UPDATE inspection_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE inspection_stage.refinery_unit = e.refinery_unit
-          AND norm_code(inspection_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(inspection_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
 
     con.execute("""
@@ -1087,7 +1088,7 @@ def _build_icu_issue_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
         UPDATE icu_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE icu_stage.refinery_unit = e.refinery_unit
-          AND norm_code(icu_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code(icu_stage.equipment_raw) = norm_code(e.equipment_code_clean)
           AND nullif(trim(icu_stage.equipment_raw),'') IS NOT NULL;
     """)
 
@@ -1169,7 +1170,7 @@ def _build_readiness_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
         UPDATE readiness_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE readiness_stage.refinery_unit = e.refinery_unit
-          AND norm_code(readiness_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code(readiness_stage.equipment_raw) = norm_code(e.equipment_code_clean)
           AND nullif(trim(readiness_stage.equipment_raw),'') IS NOT NULL;
     """)
 
@@ -1581,7 +1582,7 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         UPDATE work_order_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE work_order_stage.refinery_unit = e.refinery_unit
-          AND work_order_stage.equipment_clean = regexp_replace(trim(e.equipment_code_raw), '/[0-9]+$', '')
+          AND work_order_stage.equipment_clean = e.equipment_code_clean
           AND work_order_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
@@ -1690,7 +1691,7 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
         UPDATE notification_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE notification_stage.refinery_unit = e.refinery_unit
-          AND notification_stage.equipment_clean = regexp_replace(trim(e.equipment_code_raw), '/[0-9]+$', '')
+          AND notification_stage.equipment_clean = e.equipment_code_clean
           AND notification_stage.equipment_clean IS NOT NULL;
     """)
     con.execute("""
@@ -1805,7 +1806,7 @@ def _build_workplan_nodes(
         UPDATE {stage_table} SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE {stage_table}.refinery_unit = e.refinery_unit
-          AND norm_code({stage_table}.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code({stage_table}.equipment_raw) = norm_code(e.equipment_code_clean)
           AND {stage_table}.equipment_raw IS NOT NULL;
     """)
     con.execute(f"""
@@ -1891,7 +1892,7 @@ def _build_readiness_subtype_nodes(
         UPDATE {stage_table} SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE {stage_table}.refinery_unit = e.refinery_unit
-          AND norm_code({stage_table}.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code({stage_table}.equipment_raw) = norm_code(e.equipment_code_clean)
           AND {stage_table}.equipment_raw IS NOT NULL;
     """)
     con.execute(f"""
@@ -1974,7 +1975,7 @@ def _build_rotor_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None
         UPDATE rotor_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE rotor_stage.refinery_unit = e.refinery_unit
-          AND norm_code(rotor_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(rotor_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
     con.execute("""
         INSERT INTO node_raw
@@ -2133,7 +2134,7 @@ def _build_bad_actor_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> 
         UPDATE bad_actor_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE bad_actor_stage.refinery_unit = e.refinery_unit
-          AND norm_code(bad_actor_stage.tag_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(bad_actor_stage.tag_raw) = norm_code(e.equipment_code_clean);
     """)
     con.execute("""
         INSERT INTO node_raw
@@ -2212,7 +2213,7 @@ def _build_zero_clamp_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         UPDATE zero_clamp_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE zero_clamp_stage.refinery_unit = e.refinery_unit
-          AND norm_code(zero_clamp_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(zero_clamp_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
     con.execute("""
         INSERT INTO node_raw
@@ -2396,12 +2397,12 @@ def _build_atg_nodes(con: duckdb.DuckDBPyConnection,
             UPDATE atg_stage SET eq_tangki_id = e.equipment_id
             FROM equipment_master e
             WHERE atg_stage.refinery_unit = e.refinery_unit
-              AND norm_code(atg_stage.equipment_tangki_raw) = norm_code(e.equipment_code_raw);
+              AND norm_code(atg_stage.equipment_tangki_raw) = norm_code(e.equipment_code_clean);
             ALTER TABLE atg_stage ADD COLUMN eq_atg_id VARCHAR;
             UPDATE atg_stage SET eq_atg_id = e.equipment_id
             FROM equipment_master e
             WHERE atg_stage.refinery_unit = e.refinery_unit
-              AND norm_code(atg_stage.equipment_atg_raw) = norm_code(e.equipment_code_raw);
+              AND norm_code(atg_stage.equipment_atg_raw) = norm_code(e.equipment_code_clean);
         """)
         con.execute("""
             INSERT INTO node_raw
@@ -2533,7 +2534,7 @@ def _build_pipeline_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list
         UPDATE pipeline_insp_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE pipeline_insp_stage.refinery_unit = e.refinery_unit
-          AND norm_code(pipeline_insp_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(pipeline_insp_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
     con.execute("""
         INSERT INTO node_raw
@@ -2668,13 +2669,13 @@ def _build_monitoring_operasi_nodes(con: duckdb.DuckDBPyConnection, views: list[
         UPDATE mon_operasi_stage SET eq_process_id = e.equipment_id
         FROM equipment_master e
         WHERE mon_operasi_stage.refinery_unit = e.refinery_unit
-          AND norm_code(mon_operasi_stage.equipment_process_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code(mon_operasi_stage.equipment_process_raw) = norm_code(e.equipment_code_clean)
           AND nullif(trim(mon_operasi_stage.equipment_process_raw), '') IS NOT NULL;
         ALTER TABLE mon_operasi_stage ADD COLUMN eq_sts_id VARCHAR;
         UPDATE mon_operasi_stage SET eq_sts_id = e.equipment_id
         FROM equipment_master e
         WHERE mon_operasi_stage.refinery_unit = e.refinery_unit
-          AND norm_code(mon_operasi_stage.equipment_sts_raw) = norm_code(e.equipment_code_raw)
+          AND norm_code(mon_operasi_stage.equipment_sts_raw) = norm_code(e.equipment_code_clean)
           AND nullif(trim(mon_operasi_stage.equipment_sts_raw), '') IS NOT NULL;
     """)
     con.execute("""
@@ -2756,7 +2757,7 @@ def _build_power_steam_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -
         UPDATE power_steam_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE power_steam_stage.refinery_unit = e.refinery_unit
-          AND norm_code(power_steam_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(power_steam_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
     con.execute("""
         INSERT INTO node_raw
@@ -2833,7 +2834,7 @@ def _build_critical_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[
         UPDATE crit_eq_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE crit_eq_stage.refinery_unit = e.refinery_unit
-          AND norm_code(crit_eq_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+          AND norm_code(crit_eq_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
     con.execute("""
         INSERT INTO node_raw
