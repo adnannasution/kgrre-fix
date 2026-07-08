@@ -3457,6 +3457,299 @@ def diagnosis_generate(req: DiagnosisGenerateRequest):
     return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class AnalysisGenerateRequest(BaseModel):
+    scope: str = "dataset"      # 'dataset' | 'ru' | 'equipment'
+    ru: str = ""
+    equipment_id: str = ""
+    focus: str = "general"      # 'reliability' | 'readiness' | 'coverage' | 'risk' | 'general'
+
+
+def _analysis_ai_stream(prompt: str):
+    import os, urllib.request as urlreq
+    api_key = os.environ.get("DINOIKI_API_KEY", "")
+    if not api_key:
+        yield f"data: {json.dumps({'error': 'DINOIKI_API_KEY belum dikonfigurasi.'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+    payload = json.dumps({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "stream": True,
+    }).encode()
+    req_obj = urlreq.Request(
+        _DINOIKI_URL, data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urlreq.urlopen(req_obj, timeout=120) as resp:
+            buf = b""
+            while True:
+                chunk = resp.read(1024)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    ps = line[5:].strip()
+                    if ps == b"[DONE]":
+                        return
+                    try:
+                        obj = json.loads(ps)
+                        text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                        if text:
+                            yield f"data: {json.dumps({'text': text})}\n\n"
+                    except Exception:
+                        pass
+    except Exception as exc:
+        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+def _fmt_int(v) -> str:
+    try:
+        return f"{int(v):,}"
+    except Exception:
+        return str(v) if v is not None else "0"
+
+
+def _gather_ru_ctx(connection, ru: str) -> dict:
+    eq = rows(connection, """
+        SELECT count(*) AS total,
+               count(DISTINCT properties_json->>'equipment_type') AS types
+        FROM kg_node WHERE node_type='equipment'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [f'%{ru}%'])
+    top_eq = rows(connection, """
+        SELECT n.label, n.business_key,
+               n.properties_json->>'equipment_type' AS eq_type,
+               count(r.relationship_id) AS rel_count
+        FROM kg_node n
+        LEFT JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+        WHERE n.node_type='equipment' AND n.properties_json->>'refinery_unit' ILIKE %s
+        GROUP BY n.node_id, n.label, n.business_key, eq_type
+        ORDER BY rel_count DESC LIMIT 15
+    """, [f'%{ru}%'])
+    domain_counts: dict = {}
+    for domain in ['reliability_observation','rkap_program','equipment_issue','icu_issue',
+                   'bad_actor','critical_equipment','readiness_record','monitoring_operasi',
+                   'power_steam','paf_issue','rotor','atg','zero_clamp']:
+        r = rows(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type=%s AND properties_json->>'refinery_unit' ILIKE %s", [domain, f'%{ru}%'])
+        if r and int(r[0]['c']) > 0:
+            domain_counts[domain] = int(r[0]['c'])
+    rel_obs = rows(connection, """
+        SELECT count(*) AS total,
+               sum(CASE WHEN (properties_json->>'derived_is_top_risk')='true' THEN 1 ELSE 0 END) AS top_risk,
+               avg(CASE WHEN properties_json->>'mtbf' ~ '^[0-9]' THEN (properties_json->>'mtbf')::float END) AS avg_mtbf,
+               avg(CASE WHEN properties_json->>'mttr' ~ '^[0-9]' THEN (properties_json->>'mttr')::float END) AS avg_mttr
+        FROM kg_node WHERE node_type='reliability_observation'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [f'%{ru}%'])
+    rkap = rows(connection, """
+        SELECT count(*) AS total,
+               sum(CASE WHEN (properties_json->>'derived_is_delayed')='true' THEN 1 ELSE 0 END) AS delayed,
+               sum(CASE WHEN properties_json->>'derived_planned_cost' ~ '^[0-9]'
+                   THEN (properties_json->>'derived_planned_cost')::float ELSE 0 END) AS budget
+        FROM kg_node WHERE node_type='rkap_program'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [f'%{ru}%'])
+    bad = rows(connection, """
+        SELECT properties_json->>'failure_mode' AS fm, count(*) AS c
+        FROM kg_node WHERE node_type='bad_actor'
+          AND properties_json->>'refinery_unit' ILIKE %s
+        GROUP BY fm ORDER BY c DESC LIMIT 10
+    """, [f'%{ru}%'])
+    return {
+        'ru': ru,
+        'equipment': eq[0] if eq else {},
+        'top_equipment': top_eq,
+        'domain_counts': domain_counts,
+        'reliability': rel_obs[0] if rel_obs else {},
+        'rkap': rkap[0] if rkap else {},
+        'bad_actors': bad,
+    }
+
+
+def _gather_dataset_ctx(connection) -> dict:
+    counts = rows(connection, """
+        SELECT node_type, count(*) AS c FROM kg_node
+        WHERE node_type NOT IN ('refinery_unit','plant')
+        GROUP BY node_type ORDER BY c DESC LIMIT 30
+    """)
+    rels = rows(connection, "SELECT count(*) AS total, sum(CASE WHEN is_candidate THEN 1 ELSE 0 END) AS candidates FROM kg_relationship")
+    eq_ru = rows(connection, """
+        SELECT properties_json->>'refinery_unit' AS ru, count(*) AS c
+        FROM kg_node WHERE node_type='equipment' AND properties_json->>'refinery_unit' IS NOT NULL
+        GROUP BY ru ORDER BY c DESC LIMIT 10
+    """)
+    return {'node_counts': counts, 'relationships': rels[0] if rels else {}, 'equipment_per_ru': eq_ru}
+
+
+def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
+    focus_map = {
+        'reliability': 'keandalan dan reliability engineering (MTBF, MTTR, bad actor, failure mode)',
+        'readiness': 'kesiapan operasi (readiness record, jetty, SPM, tank)',
+        'coverage': 'kualitas data (coverage penulisan kode equipment, kelengkapan laporan)',
+        'risk': 'manajemen risiko (critical equipment, bad actor, program RKAP yang terlambat)',
+        'general': 'analisis menyeluruh mencakup keandalan, kesiapan, kualitas data, dan risiko',
+    }
+    focus_desc = focus_map.get(focus, focus_map['general'])
+
+    if scope == 'equipment':
+        item = ctx.get('equipment', {})
+        props = item.get('properties', {})
+        related = ctx.get('related', [])
+        signals = ctx.get('reliability_engineering', {})
+
+        rel_lines = []
+        for r in related[:30]:
+            rel_lines.append(f"  - [{r.get('relationship_type','')}] {r.get('label','')} (kandidat: {r.get('is_candidate', False)})")
+
+        signal_lines = []
+        for k, v in (signals or {}).items():
+            if v not in (None, '', 0, '0'):
+                signal_lines.append(f"  {k}: {v}")
+
+        prop_lines = [f"  {k}: {v}" for k, v in props.items() if v not in (None, '', 'None', '0')][:30]
+
+        data_block = f"""
+## Data Equipment
+- ID: {item.get('id','')}
+- Label: {item.get('label','')}
+- Refinery Unit: {item.get('refinery_unit','')}
+
+### Properties
+{chr(10).join(prop_lines) or '  (tidak ada)'}
+
+### Relasi di Knowledge Graph ({len(related)} relasi)
+{chr(10).join(rel_lines) or '  (tidak ada relasi)'}
+
+### Sinyal Reliability Engineering
+{chr(10).join(signal_lines) or '  (tidak ada sinyal)'}
+"""
+        scope_desc = f"satu equipment spesifik: **{item.get('label', item.get('id', ''))}** di {item.get('refinery_unit','')}"
+
+    elif scope == 'ru':
+        eq = ctx.get('equipment', {})
+        top_eq = ctx.get('top_equipment', [])
+        domain_counts = ctx.get('domain_counts', {})
+        rel = ctx.get('reliability', {})
+        rkap = ctx.get('rkap', {})
+        bad = ctx.get('bad_actors', [])
+
+        top_eq_lines = '\n'.join(f"  {i+1}. {e.get('label','')} ({e.get('business_key','')}) — {e.get('rel_count',0)} relasi, tipe: {e.get('eq_type','')}" for i, e in enumerate(top_eq))
+        domain_lines = '\n'.join(f"  - {k}: {_fmt_int(v)} baris" for k, v in domain_counts.items())
+        bad_lines = '\n'.join(f"  - {b.get('fm','')}: {b.get('c','')}x" for b in bad[:8])
+
+        data_block = f"""
+## Data Refinery Unit: {ru}
+### Equipment
+- Total equipment terdaftar: {_fmt_int(eq.get('total', 0))}
+- Jumlah tipe equipment: {_fmt_int(eq.get('types', 0))}
+
+### Top 15 Equipment Terkoneksi di Knowledge Graph
+{top_eq_lines or '  (tidak ada)'}
+
+### Volume Laporan per Domain
+{domain_lines or '  (tidak ada laporan)'}
+
+### Sinyal Reliability Observation
+- Total catatan: {_fmt_int(rel.get('total', 0))}
+- Masuk kategori top risk: {_fmt_int(rel.get('top_risk', 0))}
+- Rata-rata MTBF: {round(float(rel.get('avg_mtbf') or 0), 1)} jam
+- Rata-rata MTTR: {round(float(rel.get('avg_mttr') or 0), 1)} jam
+
+### Program RKAP
+- Total program: {_fmt_int(rkap.get('total', 0))}
+- Program terlambat: {_fmt_int(rkap.get('delayed', 0))}
+- Total anggaran: Rp {round(float(rkap.get('budget') or 0) / 1e9, 1)} miliar
+
+### Bad Actor (Failure Mode Teratas)
+{bad_lines or '  (tidak ada data bad actor)'}
+"""
+        scope_desc = f"Refinery Unit **{ru}**"
+
+    else:  # dataset
+        nc = ctx.get('node_counts', [])
+        rels = ctx.get('relationships', {})
+        eq_ru = ctx.get('equipment_per_ru', [])
+        nc_lines = '\n'.join(f"  - {r.get('node_type','')}: {_fmt_int(r.get('c',0))}" for r in nc)
+        eq_ru_lines = '\n'.join(f"  - {r.get('ru','')}: {_fmt_int(r.get('c',0))} equipment" for r in eq_ru)
+        data_block = f"""
+## Overview Dataset Knowledge Graph
+### Jumlah Node per Tipe
+{nc_lines}
+
+### Relasi
+- Total relasi terverifikasi: {_fmt_int(rels.get('total',0))}
+- Relasi kandidat (belum terverifikasi): {_fmt_int(rels.get('candidates',0))}
+
+### Distribusi Equipment per Refinery Unit
+{eq_ru_lines}
+"""
+        scope_desc = "seluruh dataset knowledge graph kilang"
+
+    return f"""Kamu adalah seorang ahli Asset Integrity & Reliability Engineering untuk kilang minyak dengan pengalaman 20 tahun. Kamu menganalisis data dari sistem knowledge graph kilang (KGRRE) yang mengintegrasikan berbagai laporan operasional: reliability observation, RKAP program, maintenance work order, notifikasi, readiness record, bad actor, critical equipment, monitoring operasi, dan lainnya.
+
+## Permintaan Analisis
+Lakukan {focus_desc} untuk {scope_desc}.
+Berikan analisis narasi mendalam dalam Bahasa Indonesia yang dapat langsung digunakan oleh manajemen kilang.
+
+{data_block}
+
+## Instruksi Output
+Tulis analisis mendalam dengan struktur berikut:
+
+### 1. Ringkasan Eksekutif
+Paragraf singkat (3-4 kalimat) kondisi keseluruhan berdasarkan data.
+
+### 2. Temuan Utama
+Poin-poin temuan paling signifikan dari data (minimal 4 poin, maksimal 8). Setiap poin harus spesifik, menyebut angka dari data, dan menjelaskan implikasinya.
+
+### 3. Analisis Mendalam
+Narasi analitik 3-5 paragraf yang menjelaskan pola, keterkaitan antar domain, dan kondisi sesungguhnya di lapangan berdasarkan data knowledge graph.
+
+### 4. Risiko Prioritas
+Daftar 3-5 risiko utama yang harus segera ditangani, dengan penjelasan dampak potensialnya.
+
+### 5. Rekomendasi Aksi
+Rekomendasi konkret dan terurut prioritas (minimal 5), dengan mempertimbangkan data yang tersedia. Sertakan timeframe (jangka pendek <3 bulan, menengah 3-12 bulan, panjang >12 bulan).
+
+### 6. Penutup
+Kalimat penutup yang menyatakan tingkat kepercayaan analisis berdasarkan kelengkapan data yang tersedia.
+
+Gunakan bahasa teknis yang tepat namun dapat dipahami manajemen. Jangan menyebutkan nama kolom database atau istilah teknis sistem. Fokus pada makna operasional dari setiap angka."""
+
+
+@app.post("/api/datasets/{dataset_id}/analysis/generate")
+def analysis_generate(dataset_id: str, req: AnalysisGenerateRequest):
+    """Generate analisis AI berdasarkan data knowledge graph — per dataset, RU, atau equipment."""
+    get_dataset(dataset_id)
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '30s'")
+        if req.scope == 'equipment' and req.equipment_id:
+            ctx = _readiness_context_for_node(connection, req.equipment_id)
+        elif req.scope == 'ru' and req.ru:
+            ctx = _gather_ru_ctx(connection, req.ru)
+        else:
+            ctx = _gather_dataset_ctx(connection)
+    finally:
+        connection.close()
+
+    prompt = _build_analysis_prompt(req.scope, req.ru, req.focus, ctx)
+    return StreamingResponse(
+        _analysis_ai_stream(prompt),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 DIST = Path(__file__).resolve().parents[1] / "dist"
 if DIST.exists():
     app.mount("/", StaticFiles(directory=DIST, html=True), name="artifact")

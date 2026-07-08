@@ -130,6 +130,49 @@ export const api = {
     request<UnmatchedEquipment[]>(`/datasets/${id}/equipment-coverage/${domain}/unmatched?${new URLSearchParams({ ru, limit: String(limit) })}`),
 }
 
+export async function streamAnalysis(
+  datasetId: string,
+  scope: 'dataset' | 'ru' | 'equipment',
+  ru: string,
+  equipmentId: string,
+  focus: string,
+  onChunk: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API}/datasets/${datasetId}/analysis/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope, ru, equipment_id: equipmentId, focus }),
+    signal,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || 'Gagal generate analisis.')
+  }
+  const reader = res.body!.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        const parsed = JSON.parse(payload) as { text?: string; error?: string }
+        if (parsed.error) throw new Error(parsed.error)
+        if (parsed.text) onChunk(parsed.text)
+      } catch (e) {
+        if (e instanceof Error && e.message) throw e
+      }
+    }
+  }
+}
+
 export async function streamDiagnosis(
   prompt: string,
   role: string,

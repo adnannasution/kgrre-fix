@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { JSX, ReactNode } from 'react'
 import { GraphView } from './components/GraphView'
 import {
   AlertIcon,
   ChainIcon,
+  SparkleIcon,
   CheckIcon,
   ChevronIcon,
   DatabaseIcon,
@@ -15,7 +16,7 @@ import {
   TrashIcon,
   UploadIcon,
 } from './components/Icons'
-import { api, streamDiagnosis } from './lib/api'
+import { api, streamDiagnosis, streamAnalysis } from './lib/api'
 import type {
   DatasetStats,
   DatasetSummary,
@@ -36,7 +37,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage'
+type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage' | 'analisis'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -267,6 +268,7 @@ export default function App() {
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
           <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
+          <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
         </nav>
         <div className="sidebar-foot">
@@ -329,6 +331,7 @@ export default function App() {
         {page === 'review' && <DataReview dataset={active} />}
         {page === 'chains' && <ChainExplorer dataset={active} />}
         {page === 'coverage' && <EquipmentCoveragePage dataset={active} />}
+        {page === 'analisis' && <AnalisisPage dataset={active} />}
         {page === 'datasets' && (
           <DatasetManager
             datasets={datasets}
@@ -3458,8 +3461,244 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
   )
 }
 
+// ─── Analisis AI ─────────────────────────────────────────────────────────────
+
+const FOCUS_OPTIONS = [
+  { value: 'general',     label: 'Analisis Menyeluruh' },
+  { value: 'reliability', label: 'Keandalan & Reliability' },
+  { value: 'readiness',   label: 'Kesiapan Operasi' },
+  { value: 'risk',        label: 'Manajemen Risiko' },
+  { value: 'coverage',    label: 'Kualitas Data' },
+]
+
+function renderMarkdown(text: string) {
+  const lines = text.split('\n')
+  const elements: JSX.Element[] = []
+  let key = 0
+  for (const line of lines) {
+    if (line.startsWith('### ')) {
+      elements.push(<h3 key={key++} className="ai-h3">{line.slice(4)}</h3>)
+    } else if (line.startsWith('## ')) {
+      elements.push(<h2 key={key++} className="ai-h2">{line.slice(3)}</h2>)
+    } else if (line.startsWith('# ')) {
+      elements.push(<h1 key={key++} className="ai-h1">{line.slice(2)}</h1>)
+    } else if (/^[-*] /.test(line)) {
+      elements.push(<li key={key++} className="ai-li">{line.slice(2)}</li>)
+    } else if (/^\d+\. /.test(line)) {
+      elements.push(<li key={key++} className="ai-li ai-li-num">{line.replace(/^\d+\. /, '')}</li>)
+    } else if (line.trim() === '') {
+      elements.push(<div key={key++} className="ai-gap" />)
+    } else {
+      const parts = line.split(/(\*\*[^*]+\*\*)/g)
+      elements.push(
+        <p key={key++} className="ai-p">
+          {parts.map((part, i) =>
+            part.startsWith('**') && part.endsWith('**')
+              ? <strong key={i}>{part.slice(2, -2)}</strong>
+              : part
+          )}
+        </p>
+      )
+    }
+  }
+  return elements
+}
+
+function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
+  const [scope, setScope] = useState<'dataset' | 'ru' | 'equipment'>('dataset')
+  const [selectedRu, setSelectedRu] = useState('')
+  const [focus, setFocus] = useState('general')
+  const [equipmentSearch, setEquipmentSearch] = useState('')
+  const [equipmentResults, setEquipmentResults] = useState<GraphNode[]>([])
+  const [selectedEquipment, setSelectedEquipment] = useState<GraphNode | null>(null)
+  const [ruList, setRuList] = useState<string[]>([])
+  const [generating, setGenerating] = useState(false)
+  const [result, setResult] = useState('')
+  const [error, setError] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!dataset) return
+    api.ruSummary(dataset.id).then(data => {
+      const rus = (data.refinery_units as Array<{ refinery_unit: string }>)
+        .map(r => r.refinery_unit).filter(Boolean).sort()
+      setRuList(rus)
+    }).catch(() => {})
+  }, [dataset])
+
+  useEffect(() => {
+    if (scope !== 'equipment' || !dataset || equipmentSearch.length < 2) {
+      setEquipmentResults([])
+      return
+    }
+    const t = setTimeout(() => {
+      api.search(dataset.id, equipmentSearch, 'equipment', '', 20)
+        .then(setEquipmentResults).catch(() => {})
+    }, 300)
+    return () => clearTimeout(t)
+  }, [equipmentSearch, scope, dataset])
+
+  const generate = async () => {
+    if (!dataset) return
+    if (scope === 'ru' && !selectedRu) { setError('Pilih Refinery Unit terlebih dahulu.'); return }
+    if (scope === 'equipment' && !selectedEquipment) { setError('Pilih equipment terlebih dahulu.'); return }
+    setError('')
+    setResult('')
+    setGenerating(true)
+    abortRef.current = new AbortController()
+    try {
+      await streamAnalysis(
+        dataset.id, scope,
+        selectedRu,
+        selectedEquipment?.id ?? '',
+        focus,
+        (chunk) => setResult(prev => prev + chunk),
+        abortRef.current.signal,
+      )
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setError(message(e))
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const stop = () => { abortRef.current?.abort(); setGenerating(false) }
+
+  if (!dataset) return <NoDataset />
+
+  const scopeReady = scope === 'dataset' || (scope === 'ru' && !!selectedRu) || (scope === 'equipment' && !!selectedEquipment)
+
+  return (
+    <div className="analisis-page">
+      {/* Config panel */}
+      <div className="analisis-config">
+        <div className="analisis-config-title">
+          <SparkleIcon style={{ width: 18, height: 18 }} />
+          Konfigurasi Analisis
+        </div>
+
+        {/* Scope tabs */}
+        <div className="analisis-field">
+          <label className="analisis-label">Cakupan Analisis</label>
+          <div className="analisis-scope-tabs">
+            {(['dataset', 'ru', 'equipment'] as const).map(s => (
+              <button
+                key={s}
+                className={`analisis-scope-tab ${scope === s ? 'active' : ''}`}
+                onClick={() => { setScope(s); setResult(''); setError('') }}
+              >
+                {s === 'dataset' ? 'Seluruh Dataset' : s === 'ru' ? 'Per Refinery Unit' : 'Per Equipment'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* RU selector */}
+        {scope === 'ru' && (
+          <div className="analisis-field">
+            <label className="analisis-label">Refinery Unit</label>
+            <select className="analisis-select" value={selectedRu} onChange={e => setSelectedRu(e.target.value)}>
+              <option value="">— Pilih RU —</option>
+              {ruList.map(ru => <option key={ru} value={ru}>{ru}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Equipment selector */}
+        {scope === 'equipment' && (
+          <div className="analisis-field">
+            <label className="analisis-label">Equipment</label>
+            {selectedEquipment
+              ? <div className="analisis-eq-selected">
+                  <span><strong>{selectedEquipment.label}</strong><span style={{ color: 'var(--muted)', marginLeft: 8 }}>{selectedEquipment.id}</span></span>
+                  <button className="link-button" onClick={() => { setSelectedEquipment(null); setEquipmentSearch('') }}>Ganti</button>
+                </div>
+              : <>
+                  <input
+                    className="analisis-input"
+                    placeholder="Cari nama atau kode equipment…"
+                    value={equipmentSearch}
+                    onChange={e => setEquipmentSearch(e.target.value)}
+                  />
+                  {equipmentResults.length > 0 && (
+                    <div className="analisis-eq-dropdown">
+                      {equipmentResults.map(eq => (
+                        <button key={eq.id} className="analisis-eq-option" onClick={() => { setSelectedEquipment(eq); setEquipmentResults([]) }}>
+                          <span className="analisis-eq-label">{eq.label}</span>
+                          <span className="analisis-eq-id">{eq.id}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+            }
+          </div>
+        )}
+
+        {/* Focus */}
+        <div className="analisis-field">
+          <label className="analisis-label">Fokus Analisis</label>
+          <div className="analisis-focus-grid">
+            {FOCUS_OPTIONS.map(f => (
+              <button
+                key={f.value}
+                className={`analisis-focus-btn ${focus === f.value ? 'active' : ''}`}
+                onClick={() => setFocus(f.value)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="analisis-actions">
+          {generating
+            ? <button className="secondary" onClick={stop}>⏹ Stop</button>
+            : <button className="primary" onClick={generate} disabled={!scopeReady}>
+                <SparkleIcon style={{ width: 14, height: 14 }} /> Generate Analisis
+              </button>
+          }
+        </div>
+
+        {error && <div className="analisis-error">{error}</div>}
+      </div>
+
+      {/* Result panel */}
+      <div className="analisis-result-wrap">
+        {!result && !generating && (
+          <div className="analisis-empty">
+            <SparkleIcon style={{ width: 48, height: 48, opacity: 0.2 }} />
+            <p>Pilih cakupan dan fokus analisis, lalu klik <strong>Generate Analisis</strong>.</p>
+            <p style={{ fontSize: 'var(--fs-xs)', marginTop: 4 }}>AI akan menganalisis data knowledge graph dan menghasilkan narasi mendalam dalam Bahasa Indonesia.</p>
+          </div>
+        )}
+        {(result || generating) && (
+          <div className="analisis-result">
+            <div className="analisis-result-header">
+              <span className="analisis-result-title">
+                {scope === 'dataset' ? 'Analisis Dataset' : scope === 'ru' ? `Analisis ${selectedRu}` : `Analisis ${selectedEquipment?.label ?? ''}`}
+                {' · '}{FOCUS_OPTIONS.find(f => f.value === focus)?.label}
+              </span>
+              {result && !generating && (
+                <button className="secondary small" onClick={() => {
+                  navigator.clipboard.writeText(result)
+                }}>Salin Teks</button>
+              )}
+            </div>
+            <div className="analisis-result-body">
+              {renderMarkdown(result)}
+              {generating && <span className="analisis-cursor">▌</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment', analisis: 'Analisis AI' })[page]
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }
