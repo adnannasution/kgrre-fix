@@ -1720,6 +1720,116 @@ def analysis(dataset_id: str, name: str, limit: int = Query(200, ge=1, le=2000))
         connection.close()
 
 
+@app.get("/api/datasets/{dataset_id}/equipment-coverage")
+def equipment_coverage(dataset_id: str):
+    """Coverage penulisan equipment di laporan non-SAP per domain per RU.
+    Menghitung berapa node domain yang punya relasi ke master equipment (cocok)
+    vs yang tidak punya relasi (kemungkinan typo / kode salah)."""
+    get_dataset(dataset_id)
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '30s'")
+        # Domain non-SAP yang dimonitor + kolom equipment_raw-nya
+        DOMAINS = [
+            ('reliability_observation', 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
+            ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
+            ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
+            ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
+            ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
+            ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
+            ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
+            ('readiness_tank',          'EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
+            ('bad_actor',               'EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
+            ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
+            ('monitoring_operasi',      'EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_process_raw'),
+            ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
+            ('atg',                     'EQUIPMENT_HAS_ATG',                     'tag_tangki'),
+            ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
+        ]
+        result = []
+        for domain_type, rel_type, eq_col in DOMAINS:
+            # Hitung per RU: total node, yang punya relasi ke equipment (matched)
+            domain_rows = rows(connection, f"""
+                SELECT
+                    coalesce(dn.properties_json->>'refinery_unit', 'Tidak diketahui') AS ru,
+                    count(*) AS total,
+                    count(r.target_node_id) AS matched,
+                    count(*) - count(r.target_node_id) AS unmatched
+                FROM kg_node dn
+                LEFT JOIN kg_relationship r
+                    ON r.source_node_id = dn.node_id
+                   AND r.relationship_type = '{rel_type}'
+                   AND NOT r.is_candidate
+                WHERE dn.node_type = '{domain_type}'
+                GROUP BY ru
+                ORDER BY ru
+            """)
+            if domain_rows:
+                result.append({{
+                    "domain": domain_type,
+                    "rel_type": rel_type,
+                    "eq_col": eq_col,
+                    "rows": domain_rows,
+                }})
+
+        return result
+    finally:
+        connection.close()
+
+
+@app.get("/api/datasets/{dataset_id}/equipment-coverage/{domain}/unmatched")
+def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", limit: int = Query(200, ge=1, le=1000)):
+    """List nilai equipment_raw yang tidak cocok ke master equipment, diurutkan dari paling sering."""
+    get_dataset(dataset_id)
+    # Cari rel_type & eq_col untuk domain ini
+    DOMAIN_MAP = {
+        'reliability_observation': ('EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
+        'rkap_program':            ('EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
+        'icu_issue':               ('EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
+        'equipment_issue':         ('EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
+        'readiness_record':        ('EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
+        'readiness_jetty':         ('EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
+        'readiness_spm':           ('EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
+        'readiness_tank':          ('EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
+        'bad_actor':               ('EQUIPMENT_HAS_BAD_ACTOR',               'tag_raw'),
+        'critical_equipment':      ('EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
+        'monitoring_operasi':      ('EQUIPMENT_HAS_MONITORING_OPERASI',      'equipment_process_raw'),
+        'rotor':                   ('EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
+        'atg':                     ('EQUIPMENT_HAS_ATG',                     'tag_tangki'),
+        'zero_clamp':              ('EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
+    }
+    if domain not in DOMAIN_MAP:
+        raise HTTPException(400, "Domain tidak dikenal.")
+    rel_type, eq_col = DOMAIN_MAP[domain]
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '20s'")
+        ru_filter = "AND dn.properties_json->>'refinery_unit' = %s" if ru else ""
+        params = [ru] if ru else []
+        unmatched = rows(connection, f"""
+            SELECT
+                trim(coalesce(dn.properties_json->>'{eq_col}', '')) AS equipment_raw_value,
+                coalesce(dn.properties_json->>'refinery_unit', 'Tidak diketahui') AS ru,
+                count(*) AS jumlah
+            FROM kg_node dn
+            WHERE dn.node_type = '{domain}'
+              AND NOT EXISTS (
+                SELECT 1 FROM kg_relationship r
+                WHERE r.source_node_id = dn.node_id
+                  AND r.relationship_type = '{rel_type}'
+                  AND NOT r.is_candidate
+              )
+              AND trim(coalesce(dn.properties_json->>'{eq_col}', '')) != ''
+              {ru_filter}
+            GROUP BY equipment_raw_value, ru
+            ORDER BY jumlah DESC
+            LIMIT %s
+        """, params + [limit])
+        return unmatched
+    finally:
+        connection.close()
+
+
 @app.get("/api/datasets/{dataset_id}/export/{kind}")
 def export(dataset_id: str, kind: str):
     dataset_item = get_dataset(dataset_id)

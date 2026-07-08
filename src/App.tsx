@@ -19,8 +19,10 @@ import { api, streamDiagnosis } from './lib/api'
 import type {
   DatasetStats,
   DatasetSummary,
+  EquipmentCoverageDomain,
   EquipmentRelated,
   FolderScan,
+  UnmatchedEquipment,
   GraphEdge,
   GraphEdgeDetail,
   GraphNode,
@@ -34,7 +36,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains'
+type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -264,6 +266,7 @@ export default function App() {
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
           <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
+          <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
         </nav>
         <div className="sidebar-foot">
@@ -325,6 +328,7 @@ export default function App() {
         {page === 'depth' && <DepthExplorer dataset={active} />}
         {page === 'review' && <DataReview dataset={active} />}
         {page === 'chains' && <ChainExplorer dataset={active} />}
+        {page === 'coverage' && <EquipmentCoveragePage dataset={active} />}
         {page === 'datasets' && (
           <DatasetManager
             datasets={datasets}
@@ -2976,6 +2980,222 @@ const depthDomainLabels: Record<string, string> = {
   issue: 'Issue / RCPS',
 }
 
+// ─── Coverage Equipment ───────────────────────────────────────────────────────
+
+const DOMAIN_LABELS: Record<string, string> = {
+  reliability_observation: 'Reliability Observation',
+  rkap_program:            'RKAP Program',
+  icu_issue:               'ICU Issue',
+  equipment_issue:         'Equipment Issue',
+  readiness_record:        'Readiness Record',
+  readiness_jetty:         'Readiness Jetty',
+  readiness_spm:           'Readiness SPM',
+  readiness_tank:          'Readiness Tank',
+  bad_actor:               'Bad Actor',
+  critical_equipment:      'Critical Equipment',
+  monitoring_operasi:      'Monitoring Operasi',
+  rotor:                   'Rotor',
+  atg:                     'ATG',
+  zero_clamp:              'Zero Clamp',
+}
+
+function coverageColor(pct: number) {
+  if (pct >= 80) return 'cov-green'
+  if (pct >= 50) return 'cov-yellow'
+  return 'cov-red'
+}
+
+function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
+  const [data, setData] = useState<EquipmentCoverageDomain[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null)
+  const [selectedRu, setSelectedRu] = useState<string>('')
+  const [unmatched, setUnmatched] = useState<UnmatchedEquipment[]>([])
+  const [unmatchedLoading, setUnmatchedLoading] = useState(false)
+  const [filterRu, setFilterRu] = useState<string>('Semua')
+
+  useEffect(() => {
+    if (!dataset) return
+    setLoading(true)
+    setError('')
+    api.equipmentCoverage(dataset.id)
+      .then(setData)
+      .catch(e => setError(message(e)))
+      .finally(() => setLoading(false))
+  }, [dataset])
+
+  const showUnmatched = async (domain: string, ru: string) => {
+    if (!dataset) return
+    setSelectedDomain(domain)
+    setSelectedRu(ru)
+    setUnmatchedLoading(true)
+    setUnmatched([])
+    try {
+      const result = await api.equipmentCoverageUnmatched(dataset.id, domain, ru === 'Semua' ? '' : ru)
+      setUnmatched(result)
+    } catch (e) {
+      setUnmatched([])
+    } finally {
+      setUnmatchedLoading(false)
+    }
+  }
+
+  if (!dataset) return <NoDataset />
+
+  // Kumpulkan semua RU unik
+  const allRus = Array.from(new Set(data.flatMap(d => d.rows.map(r => r.ru)))).sort()
+
+  // Agregat per domain (semua RU atau filter satu RU)
+  const aggregated = data.map(d => {
+    const filteredRows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
+    const total = filteredRows.reduce((s, r) => s + Number(r.total), 0)
+    const matched = filteredRows.reduce((s, r) => s + Number(r.matched), 0)
+    const unmatched = total - matched
+    const pct = total > 0 ? Math.round((matched / total) * 100) : 0
+    return { domain: d.domain, total, matched, unmatched, pct }
+  }).filter(d => d.total > 0)
+
+  // Total keseluruhan
+  const grandTotal = aggregated.reduce((s, d) => s + d.total, 0)
+  const grandMatched = aggregated.reduce((s, d) => s + d.matched, 0)
+  const grandPct = grandTotal > 0 ? Math.round((grandMatched / grandTotal) * 100) : 0
+
+  const exportUnmatched = () => {
+    if (!dataset || unmatched.length === 0) return
+    const header = 'equipment_raw,refinery_unit,jumlah'
+    const csvContent = [header, ...unmatched.map(r => `"${r.equipment_raw_value}","${r.ru}",${r.jumlah}`)].join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `unmatched_${selectedDomain}_${selectedRu || 'semua'}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="coverage-page">
+      {/* Header summary */}
+      <div className="coverage-summary-bar">
+        <div className={`coverage-grand-pct ${coverageColor(grandPct)}`}>
+          <strong>{grandPct}%</strong>
+          <span>Coverage total</span>
+        </div>
+        <div className="coverage-grand-detail">
+          <span><b>{format(grandMatched)}</b> cocok</span>
+          <span><b>{format(grandTotal - grandMatched)}</b> tidak cocok</span>
+          <span><b>{format(grandTotal)}</b> total baris laporan non-SAP</span>
+        </div>
+        <div className="coverage-ru-filter">
+          <label>Filter RU:</label>
+          <select value={filterRu} onChange={e => setFilterRu(e.target.value)}>
+            <option value="Semua">Semua RU</option>
+            {allRus.map(ru => <option key={ru} value={ru}>{ru}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {loading && <div className="coverage-loading">Memuat data coverage…</div>}
+      {error && <div className="coverage-error">{error}</div>}
+
+      {!loading && !error && (
+        <div className="coverage-body">
+          {/* Tabel per domain */}
+          <div className="coverage-table-wrap">
+            <table className="table-panel fit coverage-table">
+              <thead>
+                <tr>
+                  <th>Laporan / Domain</th>
+                  <th className="num">Total Baris</th>
+                  <th className="num">Cocok</th>
+                  <th className="num">Tidak Cocok</th>
+                  <th style={{ minWidth: 160 }}>Coverage</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aggregated.map(d => (
+                  <tr key={d.domain} className={selectedDomain === d.domain ? 'row-selected' : ''}>
+                    <td><b>{DOMAIN_LABELS[d.domain] ?? d.domain}</b></td>
+                    <td className="num">{format(d.total)}</td>
+                    <td className="num cov-matched">{format(d.matched)}</td>
+                    <td className="num cov-unmatched">{format(d.unmatched)}</td>
+                    <td>
+                      <div className="cov-bar-wrap">
+                        <div className="cov-bar">
+                          <div className={`cov-bar-fill ${coverageColor(d.pct)}`} style={{ width: `${d.pct}%` }} />
+                        </div>
+                        <span className={`cov-pct ${coverageColor(d.pct)}`}>{d.pct}%</span>
+                      </div>
+                    </td>
+                    <td>
+                      {d.unmatched > 0 && (
+                        <button className="link-button" onClick={() => showUnmatched(d.domain, filterRu)}>
+                          Lihat tidak cocok
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Panel unmatched */}
+          {selectedDomain && (
+            <div className="coverage-unmatched-panel">
+              <div className="coverage-unmatched-header">
+                <div>
+                  <strong>{DOMAIN_LABELS[selectedDomain] ?? selectedDomain}</strong>
+                  {selectedRu && selectedRu !== 'Semua' && <span> · {selectedRu}</span>}
+                  <span className="coverage-unmatched-sub"> — kode equipment tidak cocok ke master data</span>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {unmatched.length > 0 && (
+                    <button className="secondary small" onClick={exportUnmatched}>Export CSV</button>
+                  )}
+                  <button className="secondary small" onClick={() => setSelectedDomain(null)}>✕ Tutup</button>
+                </div>
+              </div>
+              {unmatchedLoading && <div className="coverage-loading">Memuat daftar tidak cocok…</div>}
+              {!unmatchedLoading && unmatched.length === 0 && (
+                <div className="coverage-loading">Tidak ada data tidak cocok untuk filter ini.</div>
+              )}
+              {!unmatchedLoading && unmatched.length > 0 && (
+                <Paged items={unmatched} pageSize={20}>
+                  {rows => (
+                    <table className="table-panel fit">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Nilai equipment di laporan</th>
+                          <th>RU</th>
+                          <th className="num">Frekuensi</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r, i) => (
+                          <tr key={i}>
+                            <td className="num muted">{i + 1}</td>
+                            <td><span className="mono">{r.equipment_raw_value || <em className="muted">kosong</em>}</span></td>
+                            <td>{r.ru}</td>
+                            <td className="num"><b>{format(r.jumlah)}</b></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </Paged>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Rantai Relasi ────────────────────────────────────────────────────────────
 
 type ChainStep = { nodeType: string; label: string; relType?: string }
@@ -3209,7 +3429,7 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
 }
 
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment' })[page]
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }
