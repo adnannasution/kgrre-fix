@@ -348,17 +348,23 @@ CREATE OR REPLACE MACRO norm_equipment(x) AS norm_text(x);
 CREATE OR REPLACE MACRO ru_normalize(x) AS (
     CASE
         WHEN norm_text(x) IN ('R201','R202','K201','K202','6201','6202')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(II|2)( |$)') THEN 'RU II Dumai'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(II|2)( |$)')
+          OR regexp_matches(norm_text(x), '^RU2[A-Z]') THEN 'RU II Dumai'
         WHEN norm_text(x) IN ('R301','K301','6301')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(III|3)( |$)') THEN 'RU III Plaju'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(III|3)( |$)')
+          OR regexp_matches(norm_text(x), '^RU3[A-Z]') THEN 'RU III Plaju'
         WHEN norm_text(x) IN ('R401','R402','R403','K401','6401')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(IV|4)( |$)') THEN 'RU IV Cilacap'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(IV|4)( |$)')
+          OR regexp_matches(norm_text(x), '^RU4[A-Z]') THEN 'RU IV Cilacap'
         WHEN norm_text(x) IN ('R501','K501','6501')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(V|5)( |$)') THEN 'RU V Balikpapan'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(V|5)( |$)')
+          OR regexp_matches(norm_text(x), '^RU5[A-Z]') THEN 'RU V Balikpapan'
         WHEN norm_text(x) IN ('R601','K601','6601')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(VI|6)( |$)') THEN 'RU VI Balongan'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(VI|6)( |$)')
+          OR regexp_matches(norm_text(x), '^RU6[A-Z]') THEN 'RU VI Balongan'
         WHEN norm_text(x) IN ('R701','K701','6701')
-          OR regexp_matches(norm_text(x), '(^| )RU ?(VII|7)( |$)') THEN 'RU VII Kasim'
+          OR regexp_matches(norm_text(x), '(^| )RU ?(VII|7)( |$)')
+          OR regexp_matches(norm_text(x), '^RU7[A-Z]') THEN 'RU VII Kasim'
         ELSE NULL
     END
 );
@@ -1537,8 +1543,7 @@ def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     ord_expr = _cs(c, 'order_no', 'aufnr', 'order', 'order_number', 'maint_order', cast=True, default='NULL')
     notif_expr = _cs(c, 'notification_no', 'notification', 'notif', 'qmnum', cast=True, default='NULL')
-    # Location lebih reliable dari maintplant untuk RU; strip /00 suffix dari equipment
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','location','plant','maintplant', default='NULL')})"
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant','location', default='NULL')})"
     eq_raw_wo = _cs(c, 'equipment', default='NULL')
     eq_clean_wo = f"regexp_replace(trim({eq_raw_wo}), '/[0-9]+$', '')" if eq_raw_wo != 'NULL' else 'NULL'
     con.execute(f"""
@@ -1647,8 +1652,7 @@ def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) 
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     notif_expr = _cs(c, 'notification_no', 'qmnum', 'notif_no', 'notification', 'notif', cast=True, default='NULL')
-    # Location (RU2-ITP/RU2-HOC) lebih reliable dari maintplant (6201)
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','location','plant','maintplant', default='NULL')})"
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant','location', default='NULL')})"
     # Equipment SAP notif sering punya suffix /00 — strip sebelum norm_code
     eq_raw = _cs(c, 'equipment', default='NULL')
     eq_clean = f"regexp_replace(trim({eq_raw}), '/[0-9]+$', '')" if eq_raw != 'NULL' else 'NULL'
