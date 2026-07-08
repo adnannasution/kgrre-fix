@@ -96,6 +96,25 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('category_action_plan') and has('problem') and has('tag_number', 'tag_no', 'equipment'):
         return 'bad_actor'
 
+    # Readiness subtypes — cek SEBELUM readiness umum (kolom status_operation sama)
+    if has('status_operation', 'status_operasi', 'status_item') and \
+            has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki'):
+        return 'readiness_tank'
+    if has('status_operation', 'status_operasi', 'status_item') and \
+            has('dermaga', 'nama_dermaga', 'jetty', 'nama_jetty', 'jenis_dermaga'):
+        return 'readiness_jetty'
+    if has('status_operation', 'status_operasi', 'status_item') and \
+            has('spm', 'single_point_mooring', 'mooring', 'nama_spm'):
+        return 'readiness_spm'
+
+    # Workplan types — program_kerja dengan target/progres
+    if has('progres_spm', 'target_spm', 'unit_spm') or (has_sub('spm') and has('program_kerja', 'progres', 'target')):
+        return 'spm_workplan'
+    if has('progres_tank', 'target_tank', 'unit_tank') or (has_sub('tangki') and has('program_kerja', 'progres', 'target')):
+        return 'tank_workplan'
+    if has('progres_jetty', 'target_jetty', 'unit_jetty') or (has_sub('jetty') and has('program_kerja', 'progres', 'target')):
+        return 'jetty_workplan'
+
     # Readiness — status_operation sangat khas dan tidak ada di domain lain
     if has('status_operation', 'status_operasi'):
         return 'readiness'
@@ -146,6 +165,14 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('issue', 'deskripsi_issue', 'paf') and has('responsible', 'pic', 'penanggung_jawab', 'priority'):
         return 'org_issue'
 
+    # SAP Notification (terpisah dari Work Order) — qmnum adalah kunci SAP notifikasi
+    if has('qmnum') or (has('notification_no', 'notif_no', 'notifictn_type') and not has('aufnr', 'order_no', 'maint_order')):
+        return 'notification'
+
+    # SAP Work Order — aufnr atau order_no + work_center (lebih spesifik dari maintenance_order lama)
+    if has('aufnr') or (has('order_no', 'maint_order') and has('work_center', 'main_work_center', 'main_workcenter', 'arbpl', 'main_workctr')):
+        return 'work_order'
+
     # Equipment Master vs Maintenance Order — paling ambigu
     eq_score = 0
     mo_score = 0
@@ -195,6 +222,10 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
 
     if "all_ru_equipment" in stem:                                     return "equipment"
     if stem.startswith(("pt02_", "pt03_")):                           return "maintenance"
+    if any(x in k for x in ("work_order", "workorder", "sap_wo", "wo_sap")) or \
+            (stem.startswith("wo_") or "_wo_" in stem):              return "work_order"
+    if any(x in k for x in ("notif_sap", "sap_notif", "notifikasi_sap", "sap_notification")) or \
+            (stem.startswith("notif") and "order" not in stem):      return "notification"
     if any(x in k for x in ("vw_reportirkapplanactual", "cost_program")) \
             or (any(x in k for x in ("rkap", "irkap")) and "alias_map" not in stem):
         return "rkap"
@@ -202,6 +233,12 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
     if "inspection_plan" in k:                                         return "inspection"
     if any(x in k for x in ("apr_", "readiness_atg", "power_steam", "weekly_monitoring")):
         return "readiness"
+    if any(x in k for x in ("workplan_spm", "spm_workplan", "prokja_spm", "program_kerja_spm")):   return "spm_workplan"
+    if any(x in k for x in ("workplan_tank", "tank_workplan", "prokja_tank", "program_kerja_tank", "program_kerja_tangki")): return "tank_workplan"
+    if any(x in k for x in ("workplan_jetty", "jetty_workplan", "prokja_jetty", "program_kerja_jetty")): return "jetty_workplan"
+    if any(x in k for x in ("readiness_jetty", "jetty_readiness")):                                return "readiness_jetty"
+    if any(x in k for x in ("readiness_spm", "spm_readiness")):                                   return "readiness_spm"
+    if any(x in k for x in ("readiness_tank", "tank_readiness")):                                 return "readiness_tank"
     if "paf_issue" in k or ("paf" in stem and any(x in sheet_l for x in ("issue", "permasalahan"))): return "paf_issue"
     if any(x in k for x in ("issue_list",)):                          return "org_issue"
     if any(x in k for x in ("icu_database", "icu")):                 return "icu_issue"
@@ -1482,6 +1519,400 @@ def _build_rcps_nodes(con: duckdb.DuckDBPyConnection,
 # Node builders — domain tambahan
 # ---------------------------------------------------------------------------
 
+
+def _build_work_order_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ord_expr = _cs(c, 'order_no', 'aufnr', 'order', 'order_number', 'maint_order', cast=True, default='NULL')
+    notif_expr = _cs(c, 'notification_no', 'notification', 'notif', 'qmnum', cast=True, default='NULL')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant', default='NULL')})"
+    con.execute(f"""
+        CREATE TABLE work_order_stage AS
+        SELECT
+            {ord_expr} AS order_raw,
+            {notif_expr} AS notification_raw,
+            coalesce(norm_code({ord_expr}), norm_code({notif_expr})) AS order_code,
+            {_cs(c, 'description','kurztext','short_text','order_description')} AS order_desc,
+            {_cs(c, 'order_type','auart','order_category')} AS order_type,
+            {_cs(c, 'priority','priok')} AS priority,
+            {_cs(c, 'user_status','txt04','ustatus')} AS user_status,
+            {_cs(c, 'system_status','sttxt')} AS system_status,
+            {_cs(c, 'basic_start','actual_start','gstrp','req_start', cast=True)} AS reference_date,
+            {_cs(c, 'total_planned_costs','geplk','planned_cost', cast=True, default="'0'")} AS planned_cost,
+            {_cs(c, 'total_actual_costs','istko','actual_cost', cast=True, default="'0'")} AS actual_cost,
+            {_cs(c, 'main_work_center','main_workcenter','arbpl','work_center','workcenter','main_workctr')} AS work_center,
+            {_cs(c, 'equipment')} AS equipment_raw,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE {ord_expr} IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE work_order_stage ADD COLUMN wo_id VARCHAR;
+        UPDATE work_order_stage
+        SET wo_id = 'node_wo_' || md5(refinery_unit || '|' || order_code)
+        WHERE order_code IS NOT NULL AND refinery_unit IS NOT NULL;
+
+        ALTER TABLE work_order_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE work_order_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE work_order_stage.refinery_unit = e.refinery_unit
+          AND norm_code(work_order_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND work_order_stage.equipment_raw IS NOT NULL;
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT DISTINCT wo_id, 'work_order', refinery_unit || '|' || order_code,
+               coalesce(nullif(order_desc,''), order_raw), 'maintenance',
+               json_object(
+                   'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'order_raw', order_raw,
+                   'notification_raw', notification_raw,
+                   'order_type', order_type,
+                   'priority', priority,
+                   'user_status', user_status,
+                   'system_status', system_status,
+                   'reference_date', reference_date,
+                   'derived_planned_cost', planned_cost,
+                   'derived_actual_cost', actual_cost,
+                   'work_center', work_center,
+                   'derived_is_open_order',
+                       CASE WHEN user_status ILIKE '%WAMA%' OR user_status ILIKE '%WASR%'
+                                 OR system_status ILIKE '%REL%' OR system_status ILIKE '%PCNF%'
+                            THEN 'true' ELSE 'false' END,
+                   'derived_status_bucket',
+                       CASE WHEN user_status ILIKE '%WAMA%' THEN 'WAMA'
+                            WHEN user_status ILIKE '%WASR%' THEN 'WASR'
+                            WHEN system_status ILIKE '%TECO%' THEN 'TECO'
+                            WHEN system_status ILIKE '%CLSD%' THEN 'CLSD'
+                            ELSE 'OPEN' END
+               ),
+               source_file, source_sheet, source_row, source_record_id
+        FROM work_order_stage WHERE wo_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, wo_id, 'EQUIPMENT_HAS_WORK_ORDER',
+               'maintenance', 1.0, 'ru_and_equipment_exact', false,
+               json_object('match_token', equipment_raw, 'source_ru', refinery_unit),
+               source_file, source_sheet, source_row, source_record_id
+        FROM work_order_stage WHERE equipment_id IS NOT NULL AND wo_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT r.refinery_unit_id, s.wo_id, 'REFINERY_UNIT_HAS_WORK_ORDER',
+               'maintenance', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM work_order_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.wo_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO unmatched_raw
+        SELECT equipment_raw, 'equipment', 'work_order', source_file, source_sheet, source_row,
+               'Equipment tidak ditemukan di master'
+        FROM work_order_stage
+        WHERE equipment_id IS NULL AND nullif(trim(equipment_raw),'') IS NOT NULL
+    """)
+
+
+def _build_notification_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    notif_expr = _cs(c, 'notification_no', 'qmnum', 'notif_no', 'notification', 'notif', cast=True, default='NULL')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','maintplant', default='NULL')})"
+    con.execute(f"""
+        CREATE TABLE notification_stage AS
+        SELECT
+            {notif_expr} AS notif_raw,
+            norm_code({notif_expr}) AS notif_code,
+            {_cs(c, 'short_text','description','kurztext','notif_description')} AS notif_desc,
+            {_cs(c, 'notifictn_type','notif_type','notification_type','qmart')} AS notif_type,
+            {_cs(c, 'priority','priok')} AS priority,
+            {_cs(c, 'system_status','sttxt')} AS system_status,
+            {_cs(c, 'user_status','txt04','ustatus')} AS user_status,
+            {_cs(c, 'notification_date','malfunction_start','reported_on', cast=True)} AS notif_date,
+            {_cs(c, 'malfunction_end','end_date', cast=True)} AS end_date,
+            {_cs(c, 'breakdown','breakdown_indicator')} AS breakdown,
+            {_cs(c, 'equipment')} AS equipment_raw,
+            {_cs(c, 'functional_loc','functional_location','floc')} AS functional_loc,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE {notif_expr} IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE notification_stage ADD COLUMN notif_id VARCHAR;
+        UPDATE notification_stage
+        SET notif_id = 'node_notif_' || md5(refinery_unit || '|' || notif_code)
+        WHERE notif_code IS NOT NULL AND refinery_unit IS NOT NULL;
+
+        ALTER TABLE notification_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE notification_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE notification_stage.refinery_unit = e.refinery_unit
+          AND norm_code(notification_stage.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND notification_stage.equipment_raw IS NOT NULL;
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT DISTINCT notif_id, 'notification', refinery_unit || '|' || notif_code,
+               coalesce(nullif(notif_desc,''), notif_raw), 'maintenance',
+               json_object(
+                   'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'notif_raw', notif_raw,
+                   'notif_type', notif_type,
+                   'priority', priority,
+                   'system_status', system_status,
+                   'user_status', user_status,
+                   'notif_date', notif_date,
+                   'end_date', end_date,
+                   'breakdown', breakdown,
+                   'functional_loc', functional_loc
+               ),
+               source_file, source_sheet, source_row, source_record_id
+        FROM notification_stage WHERE notif_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, notif_id, 'EQUIPMENT_HAS_NOTIFICATION',
+               'maintenance', 1.0, 'ru_and_equipment_exact', false,
+               json_object('match_token', equipment_raw, 'source_ru', refinery_unit),
+               source_file, source_sheet, source_row, source_record_id
+        FROM notification_stage WHERE equipment_id IS NOT NULL AND notif_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT r.refinery_unit_id, s.notif_id, 'REFINERY_UNIT_HAS_NOTIFICATION',
+               'maintenance', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM notification_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.notif_id IS NOT NULL
+    """)
+    # Hubungkan Work Order → Notification jika ada tabel work_order_stage
+    try:
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT w.wo_id, n.notif_id, 'WORK_ORDER_HAS_NOTIFICATION',
+                   'maintenance', 1.0, 'wo_notif_link', false,
+                   json_object('notification', n.notif_raw),
+                   n.source_file, n.source_sheet, n.source_row, n.source_record_id
+            FROM notification_stage n
+            JOIN work_order_stage w
+              ON norm_code(n.notif_raw) = norm_code(w.notification_raw)
+             AND n.refinery_unit = w.refinery_unit
+            WHERE n.notif_id IS NOT NULL AND w.wo_id IS NOT NULL
+        """)
+    except Exception:
+        pass
+    con.execute("""
+        INSERT INTO unmatched_raw
+        SELECT equipment_raw, 'equipment', 'notification', source_file, source_sheet, source_row,
+               'Equipment tidak ditemukan di master'
+        FROM notification_stage
+        WHERE equipment_id IS NULL AND nullif(trim(equipment_raw),'') IS NOT NULL
+    """)
+
+
+def _build_workplan_nodes(
+    con: duckdb.DuckDBPyConnection,
+    views: list[str],
+    domain_key: str,           # 'spm_workplan' / 'tank_workplan' / 'jetty_workplan'
+    node_type: str,            # 'spm_workplan' etc.
+    domain_label: str,         # 'SPM' / 'Tank' / 'Jetty'
+    stage_table: str,          # 'spm_workplan_stage' etc.
+    rel_type: str,             # 'EQUIPMENT_HAS_SPM_WORKPLAN' etc.
+    ru_rel_type: str,          # 'REFINERY_UNIT_HAS_SPM_WORKPLAN' etc.
+) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant', default='NULL')})"
+    name_expr = _cs(c, 'nama_program','program_name','program','nama_kegiatan','kegiatan', default='NULL')
+    period_expr = _cs(c, 'period','tahun','year','bulan','month','tanggal','date', cast=True, default='NULL')
+    con.execute(f"""
+        CREATE TABLE {stage_table} AS
+        SELECT
+            {_cs(c, 'equipment')} AS equipment_raw,
+            {name_expr} AS program_name,
+            {period_expr} AS period_date,
+            {_cs(c, 'target','target_realisasi','target_progres')} AS target,
+            {_cs(c, 'realisasi','progres','actual','pencapaian')} AS realisasi,
+            {_cs(c, 'status','status_program','keterangan')} AS status,
+            {_cs(c, 'remark','catatan','keterangan_tambahan')} AS remark,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+    """)
+    con.execute(f"""
+        ALTER TABLE {stage_table} ADD COLUMN wp_id VARCHAR;
+        UPDATE {stage_table}
+        SET wp_id = 'node_{node_type}_' || md5(source_record_id);
+
+        ALTER TABLE {stage_table} ADD COLUMN equipment_id VARCHAR;
+        UPDATE {stage_table} SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE {stage_table}.refinery_unit = e.refinery_unit
+          AND norm_code({stage_table}.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND {stage_table}.equipment_raw IS NOT NULL;
+    """)
+    con.execute(f"""
+        INSERT INTO node_raw
+        SELECT wp_id, '{node_type}', source_record_id,
+               coalesce(nullif(program_name,''), '{domain_label} Workplan'), '{node_type}',
+               json_object(
+                   'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'program_name', program_name,
+                   'period_date', period_date,
+                   'target', target,
+                   'realisasi', realisasi,
+                   'status', status,
+                   'remark', remark
+               ),
+               source_file, source_sheet, source_row, source_record_id
+        FROM {stage_table} WHERE wp_id IS NOT NULL
+    """)
+    con.execute(f"""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, wp_id, '{rel_type}',
+               '{node_type}', 1.0, 'ru_and_equipment_exact', false,
+               json_object('match_token', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM {stage_table} WHERE equipment_id IS NOT NULL AND wp_id IS NOT NULL
+    """)
+    con.execute(f"""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT r.refinery_unit_id, s.wp_id, '{ru_rel_type}',
+               '{node_type}', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM {stage_table} s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.wp_id IS NOT NULL
+    """)
+
+
+def _build_readiness_subtype_nodes(
+    con: duckdb.DuckDBPyConnection,
+    views: list[str],
+    node_type: str,           # 'readiness_tank' etc.
+    domain_label: str,        # 'Tank' etc.
+    stage_table: str,         # 'readiness_tank_stage' etc.
+    extra_cols: list[str],    # extra columns to include in properties_json
+) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant', default='NULL')})"
+    # Build extra properties dynamically
+    extra_props = ""
+    for col in extra_cols:
+        if col in c:
+            extra_props += f", '{col}', {col}"
+    con.execute(f"""
+        CREATE TABLE {stage_table} AS
+        SELECT
+            {_cs(c, 'equipment','tag_number','tag_no','nama_tangki','no_tangki','nama_spm','nama_dermaga')} AS equipment_raw,
+            {_cs(c, 'period_date','month_update','bulan','tanggal', cast=True)} AS period_date,
+            {_cs(c, 'status_operation','status_operasi')} AS status_operation,
+            {_cs(c, 'status_item')} AS status_item,
+            {_cs(c, 'remark','keterangan','catatan')} AS remark,
+            {_cs(c, 'rtl')} AS rtl,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+    """)
+    con.execute(f"""
+        ALTER TABLE {stage_table} ADD COLUMN rec_id VARCHAR;
+        UPDATE {stage_table} SET rec_id = 'node_{node_type}_' || md5(source_record_id);
+
+        ALTER TABLE {stage_table} ADD COLUMN equipment_id VARCHAR;
+        UPDATE {stage_table} SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE {stage_table}.refinery_unit = e.refinery_unit
+          AND norm_code({stage_table}.equipment_raw) = norm_code(e.equipment_code_raw)
+          AND {stage_table}.equipment_raw IS NOT NULL;
+    """)
+    con.execute(f"""
+        INSERT INTO node_raw
+        SELECT rec_id, '{node_type}', source_record_id,
+               coalesce(nullif(status_operation,''), '{domain_label} Readiness'), 'readiness_operation',
+               json_object(
+                   'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'period_date', period_date,
+                   'status_operation', status_operation,
+                   'status_item', status_item,
+                   'remark', remark,
+                   'rtl', rtl
+               ),
+               source_file, source_sheet, source_row, source_record_id
+        FROM {stage_table} WHERE rec_id IS NOT NULL
+    """)
+    rel_type = f"EQUIPMENT_HAS_{node_type.upper()}"
+    ru_rel_type = f"REFINERY_UNIT_HAS_{node_type.upper()}"
+    con.execute(f"""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, rec_id, '{rel_type}',
+               'readiness_operation', 1.0, 'ru_and_equipment_exact', false,
+               json_object('match_token', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM {stage_table} WHERE equipment_id IS NOT NULL AND rec_id IS NOT NULL
+    """)
+    con.execute(f"""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT r.refinery_unit_id, s.rec_id, '{ru_rel_type}',
+               'readiness_operation', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM {stage_table} s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.rec_id IS NOT NULL
+    """)
+
+
 def _build_cross_domain_relationships(con: duckdb.DuckDBPyConnection) -> None:
     """Hubungkan antar domain via equipment yang sama — hanya rantai yang logis secara operasional."""
     existing = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
@@ -2443,6 +2874,9 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
             "bad_actor": [], "zero_clamp": [], "paf": [], "paf_issue": [],
             "atg": [], "atg_program": [], "pipeline_inspection": [],
             "tkdn": [], "monitoring_operasi": [], "power_steam": [], "critical_equipment": [],
+            "work_order": [], "notification": [],
+            "spm_workplan": [], "tank_workplan": [], "jetty_workplan": [],
+            "readiness_tank": [], "readiness_jetty": [], "readiness_spm": [],
         }
 
         job.phase = "Membaca sheet Excel"
@@ -2557,6 +2991,47 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         job.progress = 89
         job.phase = "Membangun node Critical Equipment"
         _safe("Critical Equipment", _build_critical_equipment_nodes, con, domain_views["critical_equipment"])
+
+        job.progress = 89
+        job.phase = "Membangun node Work Order"
+        _safe("Work Order", _build_work_order_nodes, con, domain_views["work_order"])
+
+        job.progress = 89
+        job.phase = "Membangun node Notifikasi SAP"
+        _safe("Notification", _build_notification_nodes, con, domain_views["notification"])
+
+        job.progress = 89
+        job.phase = "Membangun node Program Kerja SPM"
+        _safe("SPM Workplan", _build_workplan_nodes, con, domain_views["spm_workplan"],
+              "spm_workplan", "spm_workplan", "SPM", "spm_workplan_stage",
+              "EQUIPMENT_HAS_SPM_WORKPLAN", "REFINERY_UNIT_HAS_SPM_WORKPLAN")
+
+        job.progress = 89
+        job.phase = "Membangun node Program Kerja Tank"
+        _safe("Tank Workplan", _build_workplan_nodes, con, domain_views["tank_workplan"],
+              "tank_workplan", "tank_workplan", "Tank", "tank_workplan_stage",
+              "EQUIPMENT_HAS_TANK_WORKPLAN", "REFINERY_UNIT_HAS_TANK_WORKPLAN")
+
+        job.progress = 89
+        job.phase = "Membangun node Program Kerja Jetty"
+        _safe("Jetty Workplan", _build_workplan_nodes, con, domain_views["jetty_workplan"],
+              "jetty_workplan", "jetty_workplan", "Jetty", "jetty_workplan_stage",
+              "EQUIPMENT_HAS_JETTY_WORKPLAN", "REFINERY_UNIT_HAS_JETTY_WORKPLAN")
+
+        job.progress = 89
+        job.phase = "Membangun node Readiness Tank"
+        _safe("Readiness Tank", _build_readiness_subtype_nodes, con, domain_views["readiness_tank"],
+              "readiness_tank", "Tank", "readiness_tank_stage", [])
+
+        job.progress = 89
+        job.phase = "Membangun node Readiness Jetty"
+        _safe("Readiness Jetty", _build_readiness_subtype_nodes, con, domain_views["readiness_jetty"],
+              "readiness_jetty", "Jetty", "readiness_jetty_stage", [])
+
+        job.progress = 89
+        job.phase = "Membangun node Readiness SPM"
+        _safe("Readiness SPM", _build_readiness_subtype_nodes, con, domain_views["readiness_spm"],
+              "readiness_spm", "SPM", "readiness_spm_stage", [])
 
         job.progress = 90
         job.phase = "Membangun relasi antar domain"
