@@ -3068,19 +3068,19 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     setError('')
     setSelectedNode(null)
     try {
-      // Cari node awal bertipe equipment (root rantai), ambil beberapa untuk pilihan
-      const rootType = chain.steps[0].nodeType
-      const roots = await api.search(dataset.id, '', rootType, '', 10)
+      // Mulai dari node type step yang diklik (bukan selalu equipment)
+      const stepIdx = chain.steps.findIndex(s => s.nodeType === step.nodeType)
+      // Depth ke depan (sisa rantai) + ke belakang (konteks sebelumnya)
+      const depthForward = chain.steps.length - stepIdx
+      const depth = Math.max(depthForward + 1, 3)
+
+      const roots = await api.search(dataset.id, '', step.nodeType, '', 10)
       if (roots.length === 0) {
         setGraph(emptyGraph)
-        setError(`Tidak ada node bertipe "${rootType}" ditemukan di dataset ini.`)
+        setError(`Tidak ada node bertipe "${step.nodeType}" ditemukan. Pastikan file sudah diupload dan relasi sudah direbuild.`)
         return
       }
 
-      // Depth = panjang rantai agar traversal mengikuti seluruh cabang
-      const depth = Math.max(chain.steps.length, 3)
-
-      // Coba dari beberapa root sampai menemukan yang punya tetangga banyak (bercabang)
       const allNodes = new Map<string, GraphNode>()
       const allEdges = new Map<string, GraphEdge>()
 
@@ -3093,18 +3093,15 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
         })
         slice.nodes.forEach(n => allNodes.set(n.id, n))
         slice.edges.forEach(e => allEdges.set(e.id, e))
-        // Berhenti kalau sudah dapat graph yang cukup bercabang
-        if (allNodes.size >= 20) break
+        if (allNodes.size >= 30) break
       }
 
       if (allNodes.size === 0) {
         setGraph(emptyGraph)
-        setError('Tidak ada relasi ditemukan. Pastikan sudah upload dan rebuild relasi.')
+        setError('Tidak ada relasi ditemukan untuk node ini.')
         return
       }
 
-      // Jika step yang diklik bukan root, filter untuk menonjolkan node di step itu
-      // tapi tetap tampilkan seluruh graph agar cabang terlihat
       setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: allNodes.size >= 200 })
     } catch (e) {
       setError(message(e))
