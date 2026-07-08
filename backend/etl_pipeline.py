@@ -1482,6 +1482,73 @@ def _build_rcps_nodes(con: duckdb.DuckDBPyConnection,
 # Node builders — domain tambahan
 # ---------------------------------------------------------------------------
 
+def _build_cross_domain_relationships(con: duckdb.DuckDBPyConnection) -> None:
+    """Hubungkan antar domain via equipment yang sama — hanya rantai yang logis secara operasional."""
+    existing = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
+
+    def _cross(src_table: str, src_id: str, tgt_table: str, tgt_id: str,
+                rel_type: str, domain: str) -> None:
+        if src_table not in existing or tgt_table not in existing:
+            return
+        con.execute(f"""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT s.{src_id}, t.{tgt_id}, '{rel_type}',
+                   '{domain}', 1.0, 'equipment_same_match', false,
+                   json_object('equipment_id', s.equipment_id),
+                   s.source_file, s.source_sheet, s.source_row, s.source_record_id
+            FROM {src_table} s
+            JOIN {tgt_table} t ON s.equipment_id = t.equipment_id
+            WHERE s.{src_id} IS NOT NULL AND t.{tgt_id} IS NOT NULL
+              AND s.equipment_id IS NOT NULL
+        """)
+
+    # Rantai 1: Critical Equipment → Bad Actor → (RCPS via no_irkap sudah ada)
+    _cross('crit_eq_stage', 'ce_id', 'bad_actor_stage', 'bad_actor_id',
+           'CRITICAL_EQUIPMENT_HAS_BAD_ACTOR', 'critical_equipment')
+
+    # Rantai 2: Zero Clamp → Inspection & Pipeline Inspection
+    _cross('zero_clamp_stage', 'zc_id', 'inspection_stage', 'inspection_id',
+           'ZERO_CLAMP_HAS_INSPECTION', 'zero_clamp')
+    _cross('zero_clamp_stage', 'zc_id', 'pipeline_insp_stage', 'pi_id',
+           'ZERO_CLAMP_HAS_PIPELINE_INSPECTION', 'zero_clamp')
+
+    # Rantai 3: Power & Steam → Monitoring Operasi
+    if 'power_steam_stage' in existing and 'mon_operasi_stage' in existing:
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT ps.ps_id, mo.mo_id, 'POWER_STEAM_HAS_MONITORING_OPERASI',
+                   'power_steam', 1.0, 'equipment_same_match', false,
+                   json_object('equipment_id', ps.equipment_id),
+                   ps.source_file, ps.source_sheet, ps.source_row, ps.source_record_id
+            FROM power_steam_stage ps
+            JOIN mon_operasi_stage mo
+              ON ps.equipment_id = mo.eq_process_id
+              OR ps.equipment_id = mo.eq_sts_id
+            WHERE ps.ps_id IS NOT NULL AND mo.mo_id IS NOT NULL
+              AND ps.equipment_id IS NOT NULL
+        """)
+
+    # Rantai 5: Reliability → ICU Issue (via equipment)
+    if 'reliability_stage' in existing and 'icu_stage' in existing:
+        con.execute("""
+            INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+                domain, confidence, match_rule, is_candidate, properties_json,
+                source_file, source_sheet, source_row, source_record_id)
+            SELECT DISTINCT r.obs_id, i.issue_id, 'RELIABILITY_HAS_ICU_ISSUE',
+                   'reliability', 1.0, 'equipment_same_match', false,
+                   json_object('equipment_id', r.equipment_id),
+                   r.source_file, r.source_sheet, r.source_row, r.source_record_id
+            FROM reliability_stage r
+            JOIN icu_stage i ON r.equipment_id = i.equipment_id
+            WHERE r.obs_id IS NOT NULL AND i.issue_id IS NOT NULL
+              AND r.equipment_id IS NOT NULL
+        """)
+
+
 def _build_bad_actor_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
     if not views:
         return
@@ -2492,6 +2559,10 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         _safe("Critical Equipment", _build_critical_equipment_nodes, con, domain_views["critical_equipment"])
 
         job.progress = 90
+        job.phase = "Membangun relasi antar domain"
+        _safe("Cross-domain", _build_cross_domain_relationships, con)
+
+        job.progress = 91
         job.phase = "Menulis output CSV"
         counts = _write_outputs(con, out_dir)
         con.close()
