@@ -447,6 +447,30 @@ def rebuild_relationships(dataset_id: str):
                 ON CONFLICT DO NOTHING
             """)
 
+        # Cross-domain: antar laporan via equipment yang sama
+        for src_type, tgt_type, rel_type in [
+            ('critical_equipment', 'bad_actor',           'CRITICAL_EQUIPMENT_HAS_BAD_ACTOR'),
+            ('zero_clamp',         'inspection',           'ZERO_CLAMP_HAS_INSPECTION'),
+            ('zero_clamp',         'pipeline_inspection',  'ZERO_CLAMP_HAS_PIPELINE_INSPECTION'),
+            ('power_steam',        'monitoring_operasi',   'POWER_STEAM_HAS_MONITORING_OPERASI'),
+        ]:
+            connection.execute(f"""
+                INSERT INTO kg_relationship
+                    (relationship_id, source_node_id, target_node_id,
+                     relationship_type, properties_json, is_candidate, confidence)
+                SELECT DISTINCT
+                    'rel_' || md5(s.node_id || '|{rel_type}|' || t.node_id),
+                    s.node_id, t.node_id, '{rel_type}',
+                    '{{}}'::jsonb, false, 1.0
+                FROM kg_node s, kg_node t
+                WHERE s.node_type = '{src_type}'
+                  AND t.node_type = '{tgt_type}'
+                  AND regexp_replace(trim(coalesce(s.properties_json->>'equipment_raw','')), '/[0-9]+$', '')
+                    = regexp_replace(trim(coalesce(t.properties_json->>'equipment_raw','')), '/[0-9]+$', '')
+                  AND trim(coalesce(s.properties_json->>'equipment_raw','')) != ''
+                ON CONFLICT DO NOTHING
+            """)
+
         # 2b. Plant / FLoc hierarki dari equipment master
         connection.execute(f"""
             INSERT INTO kg_relationship
