@@ -21,7 +21,7 @@ from .config import (
     get_config, get_dataset_row, list_datasets, rename_dataset as _rename_dataset,
     reset_all as _reset_all, save_config,
 )
-from .database import fetch_tuple, pool
+from .database import fetch_tuple, pool, scoped
 from .etl_pipeline import start_etl_import
 import threading
 import uuid
@@ -371,8 +371,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
         job.status = "running"
         job.phase = "Menghapus relasi lama"
         job.progress = 5
-        connection = db_for(dataset_id)
-        try:
+        with scoped(dataset_id, autocommit=True) as connection:
             connection.execute("DELETE FROM kg_relationship")
 
             # 1. RU → Equipment
@@ -429,9 +428,9 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                     WHERE eq.node_type = 'equipment'
                       AND dn.node_type = '{domain_type}'
                       AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                        = regexp_replace(trim(coalesce(dn.properties_json->>'{{eq_prop}}','')), '/[0-9]+$', '')
+                        = regexp_replace(trim(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', '')
                       AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
-                      AND trim(coalesce(dn.properties_json->>'{{eq_prop}}','')) != ''
+                      AND trim(coalesce(dn.properties_json->>'{eq_prop}','')) != ''
                     ON CONFLICT DO NOTHING
                 """)
 
@@ -451,9 +450,9 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                     WHERE eq.node_type = 'equipment'
                       AND dn.node_type = 'monitoring_operasi'
                       AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                        = regexp_replace(trim(coalesce(dn.properties_json->>'{{mo_prop}}','')), '/[0-9]+$', '')
+                        = regexp_replace(trim(coalesce(dn.properties_json->>'{mo_prop}','')), '/[0-9]+$', '')
                       AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
-                      AND trim(coalesce(dn.properties_json->>'{{mo_prop}}','')) != ''
+                      AND trim(coalesce(dn.properties_json->>'{mo_prop}','')) != ''
                     ON CONFLICT DO NOTHING
                 """)
 
@@ -524,7 +523,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                         '{{}}'::jsonb, false, 1.0
                     FROM kg_node s, kg_node t
                     WHERE s.node_type = '{src_t}' AND t.node_type = '{tgt_t}'
-                      AND s.label = t.properties_json->>'{{join_col}}'
+                      AND s.label = t.properties_json->>'{join_col}'
                     ON CONFLICT DO NOTHING
                 """)
 
@@ -558,8 +557,6 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
             job.progress = 95
             edge_count = fetch_tuple(connection,
                 "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")[0]
-        finally:
-            connection.close()
 
         from .config import update_dataset_counts
         update_dataset_counts(dataset_id, row["node_count"], edge_count, row["issue_count"], row["workbooks"])
