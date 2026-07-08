@@ -3087,11 +3087,11 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
           <div className="coverage-hero-counts">
             <div className="coverage-hero-chip">
               <b style={{ color: '#16a34a' }}>{format(grandMatched)}</b>
-              <span>Kode cocok ke master</span>
+              <span>Sama dengan master data</span>
             </div>
             <div className="coverage-hero-chip">
               <b style={{ color: '#dc2626' }}>{format(grandTotal - grandMatched)}</b>
-              <span>Kode tidak cocok / typo</span>
+              <span>Berbeda / tidak ditemukan</span>
             </div>
             <div className="coverage-hero-chip">
               <b>{format(grandTotal)}</b>
@@ -3126,8 +3126,8 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
               </div>
               <div className="coverage-card-footer">
                 <div className="coverage-card-nums">
-                  <span><span className="c-matched">{format(d.matched)}</span> cocok</span>
-                  <span><span className="c-unmatched">{format(d.unmatched)}</span> tidak cocok</span>
+                  <span><span className="c-matched">{format(d.matched)}</span> sama</span>
+                  <span><span className="c-unmatched">{format(d.unmatched)}</span> tidak sama</span>
                   <span style={{ color: 'var(--muted)' }}>{format(d.total)} total</span>
                 </div>
                 {d.unmatched > 0 && (
@@ -3141,30 +3141,29 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
         </div>
       )}
 
-      {/* Bottom sheet modal */}
+      {/* Modal */}
       {sheet && (
-        <div className="bottom-sheet-overlay" onClick={e => { if (e.target === e.currentTarget) closeSheet() }}>
-          <div className="bottom-sheet">
-            <div className="bottom-sheet-handle" />
-            <div className="bottom-sheet-header">
+        <div className="cov-modal-overlay" onClick={e => { if (e.target === e.currentTarget) closeSheet() }}>
+          <div className="cov-modal">
+            <div className="cov-modal-header">
               <div>
-                <div className="bottom-sheet-title">
+                <div className="cov-modal-title">
                   {DOMAIN_LABELS[sheet.domain] ?? sheet.domain}
                   {sheet.ru && sheet.ru !== 'Semua' && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {sheet.ru}</span>}
                 </div>
-                <div className="bottom-sheet-sub">Kode equipment di laporan yang tidak cocok ke master data equipment</div>
+                <div className="cov-modal-sub">Penulisan equipment di laporan yang berbeda dari master data</div>
               </div>
-              <div className="bottom-sheet-actions">
+              <div className="cov-modal-actions">
                 {unmatched.length > 0 && (
                   <button className="secondary small" onClick={exportUnmatched}>Export CSV</button>
                 )}
-                <button className="bottom-sheet-close" onClick={closeSheet} title="Tutup">✕</button>
+                <button className="cov-modal-close" onClick={closeSheet} title="Tutup">✕</button>
               </div>
             </div>
-            <div className="bottom-sheet-body">
-              {unmatchedLoading && <div className="coverage-loading">Memuat daftar tidak cocok…</div>}
+            <div className="cov-modal-body">
+              {unmatchedLoading && <div className="coverage-loading">Memuat data…</div>}
               {!unmatchedLoading && unmatched.length === 0 && (
-                <div className="coverage-loading">Tidak ada data tidak cocok untuk filter ini.</div>
+                <div className="coverage-loading">Tidak ada data untuk filter ini.</div>
               )}
               {!unmatchedLoading && unmatched.length > 0 && (
                 <Paged items={unmatched} pageSize={20}>
@@ -3173,8 +3172,9 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
                       <thead>
                         <tr>
                           <th>#</th>
-                          <th>Nilai equipment di laporan</th>
-                          <th>Refinery Unit</th>
+                          <th>Penulisan di Laporan</th>
+                          <th>Penulisan di Master Data</th>
+                          <th>RU</th>
                           <th className="num">Frekuensi</th>
                         </tr>
                       </thead>
@@ -3182,7 +3182,16 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
                         {rows.map((r, i) => (
                           <tr key={i}>
                             <td className="num" style={{ color: 'var(--muted)' }}>{i + 1}</td>
-                            <td><span className="mono">{r.equipment_raw_value || <em style={{ color: 'var(--muted)' }}>kosong</em>}</span></td>
+                            <td>
+                              <span className="mono" style={{ color: '#dc2626' }}>
+                                {r.equipment_raw_value || <em style={{ color: 'var(--muted)' }}>kosong</em>}
+                              </span>
+                            </td>
+                            <td>
+                              {r.closest_key
+                                ? <span className="cov-match-found"><span className="mono">{r.closest_key}</span>{r.closest_label && r.closest_label !== r.closest_key && <span className="cov-match-label"> {r.closest_label}</span>}</span>
+                                : <span className="cov-no-match">Tidak ditemukan</span>}
+                            </td>
                             <td>{r.ru}</td>
                             <td className="num"><b>{format(r.jumlah)}</b></td>
                           </tr>

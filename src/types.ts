@@ -282,4 +282,6 @@ export interface UnmatchedEquipment {
   equipment_raw_value: string
   ru: string
   jumlah: number
+  closest_key?: string | null
+  closest_label?: string | null
 }
