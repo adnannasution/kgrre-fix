@@ -628,6 +628,14 @@ function EtlUploadPanel({ name: datasetName, onNavigate, datasets, onRefreshData
                 <b style={{ color: 'var(--green, #16a34a)' }}>✓ Knowledge Graph berhasil dibuat</b>
                 <p style={{ margin: '4px 0 0', fontSize: '13px' }}>{job.message}</p>
               </div>
+              {job.warnings && job.warnings.length > 0 && (
+                <div style={{ padding: '12px 16px', background: 'var(--warning-subtle, #fefce8)', borderRadius: '8px', border: '1px solid var(--warning, #ca8a04)' }}>
+                  <b style={{ color: 'var(--warning, #ca8a04)', fontSize: '13px' }}>⚠ Peringatan builder ({job.warnings.length})</b>
+                  <ul style={{ margin: '6px 0 0', paddingLeft: '18px', fontSize: '12px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    {job.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button className="primary" onClick={() => onNavigate('graph')}>Buka Graph Explorer <ChevronIcon /></button>
                 <button className="secondary" onClick={() => { setJob(undefined); setError(undefined) }}>Upload lagi</button>

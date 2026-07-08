@@ -44,6 +44,7 @@ class ImportJob:
     message: str = ""
     dataset_id: str | None = None
     error: str | None = None
+    warnings: list = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancelled: bool = False
@@ -53,6 +54,7 @@ class ImportJob:
             "id": self.id, "name": self.name, "status": self.status,
             "phase": self.phase, "progress": self.progress, "message": self.message,
             "dataset_id": self.dataset_id, "error": self.error,
+            "warnings": self.warnings,
             "started_at": self.started_at, "finished_at": self.finished_at,
         }
 
