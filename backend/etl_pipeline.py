@@ -2966,7 +2966,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
 
         # Classify sheets by domain
         domain_views: dict[str, list[str]] = {
-            "equipment": [], "maintenance": [], "rkap": [],
+            "equipment": [], "rkap": [],
             "reliability": [], "inspection": [], "readiness": [],
             "icu_issue": [], "org_issue": [], "rcps": [], "rcps_recommendation": [],
             "oa_allowance": [], "oa_availability": [], "oa_issue": [], "plo": [],
@@ -3018,10 +3018,6 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
                 source_record_id VARCHAR, rn INTEGER
             )
         """)
-
-        job.progress = 35
-        job.phase = "Membangun node Maintenance Order"
-        _safe("Maintenance", _build_maintenance_nodes, con, domain_views["maintenance"])
 
         job.progress = 45
         job.phase = "Membangun node RKAP Program"
