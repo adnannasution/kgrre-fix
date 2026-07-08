@@ -403,7 +403,7 @@ def rebuild_relationships(dataset_id: str):
             ON CONFLICT DO NOTHING
         """)
 
-        # Helper: equipment → domain node matching by ru + norm_code(equipment_code_raw)
+        # Helper: equipment → domain node matching by norm_code(equipment_code_raw)
         for domain_type, rel_type, eq_prop in [
             ('maintenance_order',       'EQUIPMENT_HAS_MAINTENANCE_ORDER',       'equipment_raw'),
             ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
@@ -411,6 +411,8 @@ def rebuild_relationships(dataset_id: str):
             ('inspection',              'EQUIPMENT_HAS_INSPECTION',              'equipment_raw'),
             ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
             ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
+            ('work_order',              'EQUIPMENT_HAS_WORK_ORDER',              'equipment_raw'),
+            ('notification',            'EQUIPMENT_HAS_NOTIFICATION',            'equipment_raw'),
         ]:
             connection.execute(f"""
                 INSERT INTO kg_relationship
@@ -424,10 +426,10 @@ def rebuild_relationships(dataset_id: str):
                 FROM kg_node eq, kg_node dn
                 WHERE eq.node_type = 'equipment'
                   AND dn.node_type = '{domain_type}'
-                  AND eq.properties_json->>'refinery_unit' = dn.properties_json->>'refinery_unit'
-                  AND {_norm("eq.properties_json->>'equipment_code_raw'")}
-                    = {_norm(f"dn.properties_json->>'{eq_prop}'")}
-                  AND {_norm("eq.properties_json->>'equipment_code_raw'")} != ''
+                  AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
+                    = regexp_replace(trim(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', '')
+                  AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
+                  AND trim(coalesce(dn.properties_json->>'{eq_prop}','')) != ''
                 ON CONFLICT DO NOTHING
             """)
 
