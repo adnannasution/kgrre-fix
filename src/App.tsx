@@ -1532,16 +1532,6 @@ function GraphInsightHelper({
           <button className="primary small" title="Copy maintenance manager prompt" onClick={() => void copyPrompt('maintenance_manager')}>{copied === 'maintenance_manager' ? 'Copied ✓' : 'Maintenance Mgr'}</button>
           <button className="primary small" title="Copy VP Reliability prompt" onClick={() => void copyPrompt('vp')}>{copied === 'vp' ? 'Copied ✓' : 'VP Reliability'}</button>
           {copied === 'failed' ? <small className="copy-error">Clipboard blocked</small> : null}
-          <span className="eyebrow" style={{marginLeft: '8px'}}>Generate:</span>
-          {(['engineer', 'reliability_manager', 'maintenance_manager', 'vp'] as DiagnosticRole[]).map((role) => {
-            const labels: Record<DiagnosticRole, string> = { engineer: 'Engineer', reliability_manager: 'Reliability Mgr', maintenance_manager: 'Maintenance Mgr', vp: 'VP Reliability' }
-            const isActive = generating === role
-            return (
-              <button key={role} className={`generate-btn small${isActive ? ' active' : ''}`} title={`Generate ${labels[role]} analysis`} onClick={() => void generateAnalysis(role)}>
-                {isActive ? '⏹ Stop' : `⚡ ${labels[role]}`}
-              </button>
-            )
-          })}
           {generatedText && !generating && (
             <button className="primary small" onClick={() => setShowDashboard(true)}>Lihat Hasil</button>
           )}
