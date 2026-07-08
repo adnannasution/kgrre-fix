@@ -23,7 +23,9 @@ from .config import (
 )
 from .database import fetch_tuple, pool
 from .etl_pipeline import start_etl_import
-from .importer import JOBS, cancel_job, start_chunked_import, start_import, start_zip_import
+import threading
+import uuid
+from .importer import JOBS, JOBS_LOCK, ImportJob, cancel_job, start_chunked_import, start_import, start_zip_import
 from .scanner import scan_folder
 
 PRIORITY_RELATIONSHIPS = [
@@ -362,15 +364,14 @@ def _norm(expr: str) -> str:
     return _NORM % expr
 
 
-@app.post("/api/datasets/{dataset_id}/rebuild-relationships")
-def rebuild_relationships(dataset_id: str):
-    """Rebuild semua relasi dari data node yang sudah ada — tanpa re-upload file."""
-    row = get_dataset_row(dataset_id)
-    if not row:
-        raise HTTPException(404, "Dataset tidak ditemukan.")
-
-    connection = db_for(dataset_id)
+def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
+    """Jalankan rebuild relasi di background thread."""
     try:
+        job.status = "running"
+        job.phase = "Menghapus relasi lama"
+        job.progress = 5
+        connection = db_for(dataset_id)
+        try:
         # Hapus relasi lama
         connection.execute("DELETE FROM kg_relationship")
 
@@ -632,17 +633,41 @@ def rebuild_relationships(dataset_id: str):
                 ON CONFLICT DO NOTHING
             """)
 
-        counts = fetch_tuple(connection,
-            "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")
-        edge_count = counts[0]
+            counts = fetch_tuple(connection,
+                "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")
+            edge_count = counts[0]
+            job.progress = 95
+            job.phase = "Update katalog"
+        finally:
+            connection.close()
+
+        from .config import update_dataset_counts
+        update_dataset_counts(dataset_id, row["node_count"], edge_count, row["issue_count"], row["workbooks"])
+
+        job.status = "completed"
+        job.phase = "Selesai"
+        job.progress = 100
+        job.message = f"{edge_count:,} relasi berhasil dibangun"
+    except Exception as exc:
+        job.status = "failed"
+        job.error = str(exc)
     finally:
-        connection.close()
+        import time as _time
+        job.finished_at = _time.time()
 
-    # Update catalog
-    from .config import update_dataset_counts
-    update_dataset_counts(dataset_id, row["node_count"], edge_count, row["issue_count"], row["workbooks"])
 
-    return {"ok": True, "relationships_created": edge_count}
+@app.post("/api/datasets/{dataset_id}/rebuild-relationships")
+def rebuild_relationships(dataset_id: str):
+    """Rebuild semua relasi — berjalan di background, kembalikan job_id untuk polling."""
+    row = get_dataset_row(dataset_id)
+    if not row:
+        raise HTTPException(404, "Dataset tidak ditemukan.")
+
+    job = ImportJob(id=str(uuid.uuid4()), name=f"Rebuild relasi — {row['name']}", dataset_id=dataset_id)
+    with JOBS_LOCK:
+        JOBS[job.id] = job
+    threading.Thread(target=_run_rebuild, args=(job, dataset_id, row), daemon=True).start()
+    return job.public()
 
 
 @app.get("/api/imports/{job_id}")

@@ -2633,9 +2633,20 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
     setRebuilding(dataset.id)
     setRebuildResult(null)
     try {
-      const res = await api.rebuildRelationships(dataset.id)
-      setRebuildResult({ id: dataset.id, count: res.relationships_created })
-      await onRefresh()
+      const job = await api.rebuildRelationships(dataset.id)
+      // Poll sampai selesai
+      let j = job
+      while (j.status === 'queued' || j.status === 'running') {
+        await new Promise(r => setTimeout(r, 2000))
+        j = await api.importStatus(j.id)
+      }
+      if (j.status === 'completed') {
+        const count = parseInt(j.message?.match(/[\d,.]+/)?.[0]?.replace(/[,.]/g, '') ?? '0')
+        setRebuildResult({ id: dataset.id, count })
+        await onRefresh()
+      } else {
+        alert('Gagal rebuild relasi: ' + (j.error ?? 'Unknown error'))
+      }
     } catch (err) {
       alert('Gagal rebuild relasi: ' + String(err))
     } finally {
