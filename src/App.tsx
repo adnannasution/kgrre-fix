@@ -3009,8 +3009,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
   const [data, setData] = useState<EquipmentCoverageDomain[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [selectedDomain, setSelectedDomain] = useState<string | null>(null)
-  const [selectedRu, setSelectedRu] = useState<string>('')
+  const [sheet, setSheet] = useState<{ domain: string; ru: string } | null>(null)
   const [unmatched, setUnmatched] = useState<UnmatchedEquipment[]>([])
   const [unmatchedLoading, setUnmatchedLoading] = useState(false)
   const [filterRu, setFilterRu] = useState<string>('Semua')
@@ -3025,70 +3024,83 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
       .finally(() => setLoading(false))
   }, [dataset])
 
-  const showUnmatched = async (domain: string, ru: string) => {
+  const openSheet = async (domain: string, ru: string) => {
     if (!dataset) return
-    setSelectedDomain(domain)
-    setSelectedRu(ru)
+    setSheet({ domain, ru })
     setUnmatchedLoading(true)
     setUnmatched([])
     try {
       const result = await api.equipmentCoverageUnmatched(dataset.id, domain, ru === 'Semua' ? '' : ru)
       setUnmatched(result)
-    } catch (e) {
+    } catch {
       setUnmatched([])
     } finally {
       setUnmatchedLoading(false)
     }
   }
 
+  const closeSheet = () => { setSheet(null); setUnmatched([]) }
+
+  const exportUnmatched = () => {
+    if (!dataset || unmatched.length === 0 || !sheet) return
+    const header = 'equipment_raw,refinery_unit,jumlah'
+    const csv = [header, ...unmatched.map(r => `"${r.equipment_raw_value}","${r.ru}",${r.jumlah}`)].join('\n')
+    const a = Object.assign(document.createElement('a'), {
+      href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+      download: `unmatched_${sheet.domain}_${sheet.ru || 'semua'}.csv`,
+    })
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
   if (!dataset) return <NoDataset />
 
-  // Kumpulkan semua RU unik
   const allRus = Array.from(new Set(data.flatMap(d => d.rows.map(r => r.ru)))).sort()
 
-  // Agregat per domain (semua RU atau filter satu RU)
   const aggregated = data.map(d => {
-    const filteredRows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
-    const total = filteredRows.reduce((s, r) => s + Number(r.total), 0)
-    const matched = filteredRows.reduce((s, r) => s + Number(r.matched), 0)
-    const unmatched = total - matched
+    const rows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
+    const total = rows.reduce((s, r) => s + Number(r.total), 0)
+    const matched = rows.reduce((s, r) => s + Number(r.matched), 0)
     const pct = total > 0 ? Math.round((matched / total) * 100) : 0
-    return { domain: d.domain, total, matched, unmatched, pct }
+    return { domain: d.domain, total, matched, unmatched: total - matched, pct }
   }).filter(d => d.total > 0)
 
-  // Total keseluruhan
   const grandTotal = aggregated.reduce((s, d) => s + d.total, 0)
   const grandMatched = aggregated.reduce((s, d) => s + d.matched, 0)
   const grandPct = grandTotal > 0 ? Math.round((grandMatched / grandTotal) * 100) : 0
 
-  const exportUnmatched = () => {
-    if (!dataset || unmatched.length === 0) return
-    const header = 'equipment_raw,refinery_unit,jumlah'
-    const csvContent = [header, ...unmatched.map(r => `"${r.equipment_raw_value}","${r.ru}",${r.jumlah}`)].join('\n')
-    const blob = new Blob([csvContent], { type: 'text/csv' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `unmatched_${selectedDomain}_${selectedRu || 'semua'}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   return (
     <div className="coverage-page">
-      {/* Header summary */}
-      <div className="coverage-summary-bar">
-        <div className={`coverage-grand-pct ${coverageColor(grandPct)}`}>
+      {/* Hero summary */}
+      <div className="coverage-hero">
+        <div className={`coverage-hero-gauge ${coverageColor(grandPct)}`}>
           <strong>{grandPct}%</strong>
-          <span>Coverage total</span>
+          <span>Coverage Total</span>
         </div>
-        <div className="coverage-grand-detail">
-          <span><b>{format(grandMatched)}</b> cocok</span>
-          <span><b>{format(grandTotal - grandMatched)}</b> tidak cocok</span>
-          <span><b>{format(grandTotal)}</b> total baris laporan non-SAP</span>
+        <div className="coverage-hero-stats">
+          <div className="coverage-hero-bar-row">
+            <div className="coverage-hero-bar">
+              <div className={`cov-bar-fill ${coverageColor(grandPct)}`} style={{ width: `${grandPct}%` }} />
+            </div>
+            <span className={`cov-pct ${coverageColor(grandPct)}`}>{grandPct}%</span>
+          </div>
+          <div className="coverage-hero-counts">
+            <div className="coverage-hero-chip">
+              <b style={{ color: '#16a34a' }}>{format(grandMatched)}</b>
+              <span>Kode cocok ke master</span>
+            </div>
+            <div className="coverage-hero-chip">
+              <b style={{ color: '#dc2626' }}>{format(grandTotal - grandMatched)}</b>
+              <span>Kode tidak cocok / typo</span>
+            </div>
+            <div className="coverage-hero-chip">
+              <b>{format(grandTotal)}</b>
+              <span>Total baris laporan non-SAP</span>
+            </div>
+          </div>
         </div>
-        <div className="coverage-ru-filter">
-          <label>Filter RU:</label>
+        <div className="coverage-hero-filter">
+          <label>Filter RU</label>
           <select value={filterRu} onChange={e => setFilterRu(e.target.value)}>
             <option value="Semua">Semua RU</option>
             {allRus.map(ru => <option key={ru} value={ru}>{ru}</option>)}
@@ -3100,64 +3112,56 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
       {error && <div className="coverage-error">{error}</div>}
 
       {!loading && !error && (
-        <div className="coverage-body">
-          {/* Tabel per domain */}
-          <div className="coverage-table-wrap">
-            <table className="table-panel fit coverage-table">
-              <thead>
-                <tr>
-                  <th>Laporan / Domain</th>
-                  <th className="num">Total Baris</th>
-                  <th className="num">Cocok</th>
-                  <th className="num">Tidak Cocok</th>
-                  <th style={{ minWidth: 160 }}>Coverage</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aggregated.map(d => (
-                  <tr key={d.domain} className={selectedDomain === d.domain ? 'row-selected' : ''}>
-                    <td><b>{DOMAIN_LABELS[d.domain] ?? d.domain}</b></td>
-                    <td className="num">{format(d.total)}</td>
-                    <td className="num cov-matched">{format(d.matched)}</td>
-                    <td className="num cov-unmatched">{format(d.unmatched)}</td>
-                    <td>
-                      <div className="cov-bar-wrap">
-                        <div className="cov-bar">
-                          <div className={`cov-bar-fill ${coverageColor(d.pct)}`} style={{ width: `${d.pct}%` }} />
-                        </div>
-                        <span className={`cov-pct ${coverageColor(d.pct)}`}>{d.pct}%</span>
-                      </div>
-                    </td>
-                    <td>
-                      {d.unmatched > 0 && (
-                        <button className="link-button" onClick={() => showUnmatched(d.domain, filterRu)}>
-                          Lihat tidak cocok
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Panel unmatched */}
-          {selectedDomain && (
-            <div className="coverage-unmatched-panel">
-              <div className="coverage-unmatched-header">
-                <div>
-                  <strong>{DOMAIN_LABELS[selectedDomain] ?? selectedDomain}</strong>
-                  {selectedRu && selectedRu !== 'Semua' && <span> · {selectedRu}</span>}
-                  <span className="coverage-unmatched-sub"> — kode equipment tidak cocok ke master data</span>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {unmatched.length > 0 && (
-                    <button className="secondary small" onClick={exportUnmatched}>Export CSV</button>
-                  )}
-                  <button className="secondary small" onClick={() => setSelectedDomain(null)}>✕ Tutup</button>
+        <div className="coverage-cards">
+          {aggregated.map(d => (
+            <div key={d.domain} className="coverage-card">
+              <div className="coverage-card-header">
+                <span className="coverage-card-title">{DOMAIN_LABELS[d.domain] ?? d.domain}</span>
+                <span className={`coverage-card-badge ${coverageColor(d.pct)}`}>{d.pct}%</span>
+              </div>
+              <div className="coverage-card-bar-row">
+                <div className="cov-bar">
+                  <div className={`cov-bar-fill ${coverageColor(d.pct)}`} style={{ width: `${d.pct}%` }} />
                 </div>
               </div>
+              <div className="coverage-card-footer">
+                <div className="coverage-card-nums">
+                  <span><span className="c-matched">{format(d.matched)}</span> cocok</span>
+                  <span><span className="c-unmatched">{format(d.unmatched)}</span> tidak cocok</span>
+                  <span style={{ color: 'var(--muted)' }}>{format(d.total)} total</span>
+                </div>
+                {d.unmatched > 0 && (
+                  <button className="coverage-btn-see" onClick={() => openSheet(d.domain, filterRu)}>
+                    Lihat tidak cocok
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Bottom sheet modal */}
+      {sheet && (
+        <div className="bottom-sheet-overlay" onClick={e => { if (e.target === e.currentTarget) closeSheet() }}>
+          <div className="bottom-sheet">
+            <div className="bottom-sheet-handle" />
+            <div className="bottom-sheet-header">
+              <div>
+                <div className="bottom-sheet-title">
+                  {DOMAIN_LABELS[sheet.domain] ?? sheet.domain}
+                  {sheet.ru && sheet.ru !== 'Semua' && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {sheet.ru}</span>}
+                </div>
+                <div className="bottom-sheet-sub">Kode equipment di laporan yang tidak cocok ke master data equipment</div>
+              </div>
+              <div className="bottom-sheet-actions">
+                {unmatched.length > 0 && (
+                  <button className="secondary small" onClick={exportUnmatched}>Export CSV</button>
+                )}
+                <button className="bottom-sheet-close" onClick={closeSheet} title="Tutup">✕</button>
+              </div>
+            </div>
+            <div className="bottom-sheet-body">
               {unmatchedLoading && <div className="coverage-loading">Memuat daftar tidak cocok…</div>}
               {!unmatchedLoading && unmatched.length === 0 && (
                 <div className="coverage-loading">Tidak ada data tidak cocok untuk filter ini.</div>
@@ -3170,15 +3174,15 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
                         <tr>
                           <th>#</th>
                           <th>Nilai equipment di laporan</th>
-                          <th>RU</th>
+                          <th>Refinery Unit</th>
                           <th className="num">Frekuensi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((r, i) => (
                           <tr key={i}>
-                            <td className="num muted">{i + 1}</td>
-                            <td><span className="mono">{r.equipment_raw_value || <em className="muted">kosong</em>}</span></td>
+                            <td className="num" style={{ color: 'var(--muted)' }}>{i + 1}</td>
+                            <td><span className="mono">{r.equipment_raw_value || <em style={{ color: 'var(--muted)' }}>kosong</em>}</span></td>
                             <td>{r.ru}</td>
                             <td className="num"><b>{format(r.jumlah)}</b></td>
                           </tr>
@@ -3189,7 +3193,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
                 </Paged>
               )}
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>
