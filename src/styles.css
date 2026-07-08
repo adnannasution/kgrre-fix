@@ -102,7 +102,10 @@ p { text-wrap: pretty; }
 .mono { font-family: var(--mono); }
 
 .app-shell { position: relative; z-index: 1; min-height: 100dvh; display: grid; grid-template-columns: 244px 1fr; }
-.sidebar { position: fixed; inset: 0 auto 0 0; width: 244px; background: linear-gradient(180deg, #ffffff, #fafbfd); border-right: 1px solid var(--line); padding: var(--space-xl) var(--space-md) var(--space-lg); display: flex; flex-direction: column; z-index: var(--z-sidebar); box-shadow: 10px 0 30px #15213d08; }
+.sidebar { position: fixed; inset: 0 auto 0 0; width: 244px; background: linear-gradient(180deg, #ffffff, #fafbfd); border-right: 1px solid var(--line); padding: var(--space-xl) var(--space-md) var(--space-lg); display: flex; flex-direction: column; z-index: var(--z-sidebar); box-shadow: 10px 0 30px #15213d08; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.sidebar::-webkit-scrollbar { width: 4px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 .brand { display: flex; gap: var(--space-sm); align-items: center; padding: 0 var(--space-xs) var(--space-lg); }
 .brand-mark { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r-md); color: #ffffff; background: var(--blue); box-shadow: 0 10px 22px #2f6bdb33; }
 .brand strong { display: block; font-family: var(--display); font-size: 16px; letter-spacing: -.2px; }

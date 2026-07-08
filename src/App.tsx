@@ -853,81 +853,6 @@ function ImportCenter({
 
   return (
     <section className="stack">
-      <div className="folder-card">
-        <div className="folder-icon"><UploadIcon /></div>
-        <div className="folder-copy">
-          <span className="eyebrow">Watched folder</span>
-          <strong>{scan?.folder ?? folder}</strong>
-          <p>File CSV/JSON hanya dibaca. File sumber tidak dipindahkan, ditulis ulang, atau dihapus.</p>
-        </div>
-        <button className="secondary" onClick={onScan}>Scan folder</button>
-      </div>
-
-      <section className="panel">
-        <div className="panel-heading split">
-          <div><h2>ETL CSV package</h2><p>Required: nodes.csv + relationships.csv · scan otomatis setiap {scan?.scan_interval_seconds ?? 10} detik · stabil setelah {scan?.stability_seconds ?? 30} detik</p></div>
-          <div className={`folder-health ${scan?.readable ? 'ok' : 'bad'}`}><span />{scan?.readable ? 'Folder accessible' : 'Folder unavailable'}</div>
-        </div>
-        <div className="file-grid">
-          {scan?.files.map((file) => (
-            <div className={`file-row status-${slug(file.status)}`} key={file.name}>
-              <div className="file-number">{file.required ? 'R' : 'O'}</div>
-              <div className="file-info">
-                <strong>{file.name}</strong>
-                <span>{file.path ? `${bytes(file.size)} · ${human(file.file_type ?? file.workbook_type)}` : file.required ? 'File wajib' : 'File opsional'}</span>
-                {file.warnings.map((warning) => <small key={warning}>{warning}</small>)}
-              </div>
-              <StatusBadge status={file.status} />
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {job && ['queued', 'running', 'failed', 'cancelled'].includes(job.status) && (
-        <section className="panel job-card">
-          <div className="job-head"><div><span className="eyebrow">{job.phase}</span><h3>{job.message || job.name}</h3></div><b>{job.progress}%</b></div>
-          <div className="progress"><span style={{ width: `${job.progress}%` }} /></div>
-          {job.error && <p className="job-error">{job.error}</p>}
-          {job.status === 'running' && <button className="danger-link" onClick={onCancel}>Batalkan import</button>}
-        </section>
-      )}
-
-      <section className="panel import-action">
-        <div>
-          <label htmlFor="dataset-name">Nama dataset</label>
-          <input id="dataset-name" value={name} onChange={(event) => setName(event.target.value)} />
-          {requiredMissing > 0 && <p className="warning-text"><AlertIcon />{requiredMissing} file wajib belum tersedia. Import akan menunggu nodes.csv dan relationships.csv.</p>}
-        </div>
-        <button className="primary large" disabled={!ready || busy || job?.status === 'running'} onClick={() => void onStart(name)}>
-          {busy ? 'Memvalidasi…' : 'Import folder'} <ChevronIcon />
-        </button>
-      </section>
-
-      <section className="panel import-action">
-        <div>
-          <label htmlFor="zip-upload">Upload ZIP output ETL</label>
-          <input id="zip-upload" type="file" accept=".zip,application/zip" onChange={(event) => setZipFile(event.target.files?.[0])} />
-          <p className="warning-text"><UploadIcon />ZIP diextract ke storage aplikasi; file sumber ZIP tidak dipakai sebagai graph mentah.</p>
-        </div>
-        <button className="secondary large" disabled={!zipFile || busy || job?.status === 'running'} onClick={() => zipFile && void onZip(zipFile, name)}>
-          Import ZIP <ChevronIcon />
-        </button>
-      </section>
-
-      <ChunkedUploadPanel name={name} onJobStart={setChunkedJob} disabled={busy || job?.status === 'running'} />
-      {chunkedJob && ['queued', 'running', 'failed', 'cancelled'].includes(chunkedJob.status) && (
-        <section className="panel job-card">
-          <div className="job-head"><div><span className="eyebrow">{chunkedJob.phase}</span><h3>{chunkedJob.message || chunkedJob.name}</h3></div><b>{chunkedJob.progress}%</b></div>
-          <div className="progress"><span style={{ width: `${chunkedJob.progress}%` }} /></div>
-          {chunkedJob.error && <p className="job-error">{chunkedJob.error}</p>}
-        </section>
-      )}
-
-      <details className="settings panel">
-        <summary>Folder settings</summary>
-        <div><input value={folder} onChange={(event) => setFolder(event.target.value)} /><button className="secondary" onClick={() => void onFolder(folder)}>Simpan path</button></div>
-      </details>
-
       <EtlUploadPanel name={name} onNavigate={onNavigate} datasets={datasets} onRefreshDatasets={onRefreshDatasets} />
     </section>
   )
@@ -3074,13 +2999,16 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
 
   const allRus = Array.from(new Set(data.flatMap(d => d.rows.map(r => r.ru)))).sort()
 
-  const aggregated = data.map(d => {
-    const rows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
-    const total = rows.reduce((s, r) => s + Number(r.total), 0)
-    const matched = rows.reduce((s, r) => s + Number(r.matched), 0)
-    const pct = total > 0 ? Math.round((matched / total) * 100) : 0
-    return { domain: d.domain, total, matched, unmatched: total - matched, pct }
-  }).filter(d => d.total > 0)
+  const COVERAGE_EXCLUDE = new Set(['notification', 'work_order', 'maintenance_notification'])
+  const aggregated = data
+    .filter(d => !COVERAGE_EXCLUDE.has(d.domain))
+    .map(d => {
+      const rows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
+      const total = rows.reduce((s, r) => s + Number(r.total), 0)
+      const matched = rows.reduce((s, r) => s + Number(r.matched), 0)
+      const pct = total > 0 ? Math.round((matched / total) * 100) : 0
+      return { domain: d.domain, total, matched, unmatched: total - matched, pct }
+    }).filter(d => d.total > 0)
 
   const grandTotal = aggregated.reduce((s, d) => s + d.total, 0)
   const grandMatched = aggregated.reduce((s, d) => s + d.matched, 0)
