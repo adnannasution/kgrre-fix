@@ -96,6 +96,10 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('category_action_plan') and has('problem') and has('tag_number', 'tag_no', 'equipment'):
         return 'bad_actor'
 
+    # Rotor — readiness_rotor / status_readiness_spare_rotor sangat spesifik
+    if has('readiness_rotor', 'status_readiness_spare_rotor', 'spare_rotor'):
+        return 'rotor'
+
     # Readiness subtypes — cek SEBELUM readiness umum (kolom status_operation sama)
     if has('status_operation', 'status_operasi', 'status_item') and \
             has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki'):
@@ -222,6 +226,7 @@ def _detect_domain(filename: str, sheet: str, headers: list[str] | None = None) 
 
     if "all_ru_equipment" in stem:                                     return "equipment"
     if stem.startswith(("pt02_", "pt03_")):                           return "maintenance"
+    if "rotor" in k:                                                   return "rotor"
     if any(x in k for x in ("work_order", "workorder", "sap_wo", "wo_sap")) or \
             (stem.startswith("wo_") or "_wo_" in stem):              return "work_order"
     if any(x in k for x in ("notif_sap", "sap_notif", "notifikasi_sap", "sap_notification")) or \
@@ -1913,6 +1918,100 @@ def _build_readiness_subtype_nodes(
     """)
 
 
+def _build_rotor_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    con.execute(f"""
+        CREATE TABLE rotor_stage AS
+        SELECT
+            {_cs(c, 'equipment')} AS equipment_raw,
+            {_cs(c, 'bulan','month','period', cast=True)} AS bulan,
+            {_cs(c, 'program','program_name')} AS program,
+            {_cs(c, 'brand')} AS brand,
+            {_cs(c, 'status_readiness_spare_rotor','readiness_rotor','spare_rotor')} AS status_readiness,
+            {_cs(c, 'status_workplan','status')} AS status_workplan,
+            {_cs(c, 'detail_status_workplan','detail_status')} AS detail_status_workplan,
+            {_cs(c, 'keterangan','remark','catatan')} AS keterangan,
+            {_cs(c, 'action_plan_category','action_plan')} AS action_plan_category,
+            {_cs(c, 'external_resource','resource')} AS external_resource,
+            {_cs(c, 'no_irkap')} AS no_irkap,
+            {_cs(c, 'finish_date_eksekusi','finish_date', cast=True)} AS finish_date,
+            {_cs(c, 'last_update', cast=True)} AS last_update,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({_cs(c, 'equipment')}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE rotor_stage ADD COLUMN rotor_id VARCHAR;
+        UPDATE rotor_stage SET rotor_id = 'node_rotor_' || md5(source_record_id);
+
+        ALTER TABLE rotor_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE rotor_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE rotor_stage.refinery_unit = e.refinery_unit
+          AND norm_code(rotor_stage.equipment_raw) = norm_code(e.equipment_code_raw);
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT rotor_id, 'rotor', source_record_id,
+               coalesce(nullif(equipment_raw,''), 'Rotor'), 'rotor',
+               json_object(
+                   'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'bulan', bulan,
+                   'program', program,
+                   'brand', brand,
+                   'status_readiness', status_readiness,
+                   'status_workplan', status_workplan,
+                   'detail_status_workplan', detail_status_workplan,
+                   'keterangan', keterangan,
+                   'action_plan_category', action_plan_category,
+                   'external_resource', external_resource,
+                   'no_irkap', no_irkap,
+                   'finish_date', finish_date,
+                   'last_update', last_update
+               ),
+               source_file, source_sheet, source_row, source_record_id
+        FROM rotor_stage WHERE rotor_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, rotor_id, 'EQUIPMENT_HAS_ROTOR',
+               'rotor', 1.0, 'ru_and_equipment_exact', false,
+               json_object('match_token', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM rotor_stage WHERE equipment_id IS NOT NULL AND rotor_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT r.refinery_unit_id, s.rotor_id, 'REFINERY_UNIT_HAS_ROTOR',
+               'rotor', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM rotor_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.rotor_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO unmatched_raw
+        SELECT equipment_raw, 'equipment', 'rotor', source_file, source_sheet, source_row,
+               'Equipment tidak ditemukan di master'
+        FROM rotor_stage
+        WHERE equipment_id IS NULL AND nullif(trim(equipment_raw),'') IS NOT NULL
+    """)
+
+
 def _build_cross_domain_relationships(con: duckdb.DuckDBPyConnection) -> None:
     """Hubungkan antar domain via equipment yang sama — hanya rantai yang logis secara operasional."""
     existing = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
@@ -2874,7 +2973,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
             "bad_actor": [], "zero_clamp": [], "paf": [], "paf_issue": [],
             "atg": [], "atg_program": [], "pipeline_inspection": [],
             "tkdn": [], "monitoring_operasi": [], "power_steam": [], "critical_equipment": [],
-            "work_order": [], "notification": [],
+            "work_order": [], "notification": [], "rotor": [],
             "spm_workplan": [], "tank_workplan": [], "jetty_workplan": [],
             "readiness_tank": [], "readiness_jetty": [], "readiness_spm": [],
         }
@@ -2991,6 +3090,10 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         job.progress = 89
         job.phase = "Membangun node Critical Equipment"
         _safe("Critical Equipment", _build_critical_equipment_nodes, con, domain_views["critical_equipment"])
+
+        job.progress = 89
+        job.phase = "Membangun node Rotor"
+        _safe("Rotor", _build_rotor_nodes, con, domain_views["rotor"])
 
         job.progress = 89
         job.phase = "Membangun node Work Order"
