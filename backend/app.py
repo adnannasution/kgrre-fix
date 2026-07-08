@@ -1826,10 +1826,10 @@ def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", lim
             LIMIT %s
         """, params + [limit])
 
-        # Cari closest match dari master equipment berdasarkan token exact match
-        raw_vals = [r['equipment_raw_value'] for r in unmatched]
+        # Cari closest match dari master equipment: token exact OR substring (raw contains business_key)
+        raw_vals_list = [r['equipment_raw_value'] for r in unmatched]
         closest: dict = {}
-        if raw_vals:
+        if raw_vals_list:
             try:
                 match_rows = rows(connection, """
                     WITH raw_vals AS (
@@ -1841,13 +1841,18 @@ def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", lim
                         e.label AS closest_label
                     FROM raw_vals rv
                     JOIN kg_node e ON e.node_type = 'equipment'
-                        AND lower(e.business_key) = ANY(
-                            SELECT lower(t)
-                            FROM regexp_split_to_table(rv.raw_val, '[\\s\\-\\/\\&\\(\\)\\,]+') AS t
-                            WHERE length(t) >= 3
+                        AND length(e.business_key) >= 4
+                        AND (
+                            lower(e.business_key) = ANY(
+                                SELECT lower(t)
+                                FROM regexp_split_to_table(rv.raw_val, '[\\s\\-\\/\\&\\(\\)\\,\\.\\:]+') AS t
+                                WHERE length(t) >= 3
+                            )
+                            OR lower(rv.raw_val) LIKE '%%' || lower(e.business_key) || '%%'
                         )
-                    LIMIT 1000
-                """, [raw_vals])
+                    ORDER BY rv.raw_val, length(e.business_key) DESC
+                    LIMIT 2000
+                """, [raw_vals_list])
                 for mr in match_rows:
                     if mr['raw_val'] not in closest:
                         closest[mr['raw_val']] = (mr['closest_key'], mr['closest_label'])

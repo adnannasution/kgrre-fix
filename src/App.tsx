@@ -3168,32 +3168,35 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
               {!unmatchedLoading && unmatched.length > 0 && (
                 <Paged items={unmatched} pageSize={20}>
                   {rows => (
-                    <table className="table-panel fit">
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <thead>
                         <tr>
-                          <th>#</th>
-                          <th>Penulisan di Laporan</th>
-                          <th>Penulisan di Master Data</th>
-                          <th>RU</th>
-                          <th className="num">Frekuensi</th>
+                          <th style={{ width: 40, textAlign: 'right', padding: '10px 16px', fontSize: '0.7rem', letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted)', fontWeight: 600, background: 'var(--panel-2)', borderBottom: '1px solid var(--line)' }}>#</th>
+                          <th style={{ padding: '10px 16px', fontSize: '0.7rem', letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted)', fontWeight: 600, background: 'var(--panel-2)', borderBottom: '1px solid var(--line)' }}>Penulisan di Laporan</th>
+                          <th style={{ padding: '10px 16px', fontSize: '0.7rem', letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted)', fontWeight: 600, background: 'var(--panel-2)', borderBottom: '1px solid var(--line)' }}>Penulisan di Master Data</th>
+                          <th style={{ padding: '10px 16px', fontSize: '0.7rem', letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted)', fontWeight: 600, background: 'var(--panel-2)', borderBottom: '1px solid var(--line)', whiteSpace: 'nowrap' }}>Refinery Unit</th>
+                          <th style={{ padding: '10px 16px', fontSize: '0.7rem', letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted)', fontWeight: 600, background: 'var(--panel-2)', borderBottom: '1px solid var(--line)', textAlign: 'right', whiteSpace: 'nowrap' }}>Frekuensi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((r, i) => (
-                          <tr key={i}>
-                            <td className="num" style={{ color: 'var(--muted)' }}>{i + 1}</td>
-                            <td>
-                              <span className="mono" style={{ color: '#dc2626' }}>
+                          <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
+                            <td style={{ padding: '9px 16px', fontSize: '0.72rem', color: 'var(--muted)', textAlign: 'right', width: 40 }}>{i + 1}</td>
+                            <td style={{ padding: '9px 16px' }}>
+                              <span className="cov-raw-val">
                                 {r.equipment_raw_value || <em style={{ color: 'var(--muted)' }}>kosong</em>}
                               </span>
                             </td>
-                            <td>
+                            <td style={{ padding: '9px 16px' }}>
                               {r.closest_key
-                                ? <span className="cov-match-found"><span className="mono">{r.closest_key}</span>{r.closest_label && r.closest_label !== r.closest_key && <span className="cov-match-label"> {r.closest_label}</span>}</span>
+                                ? <div className="cov-match-found">
+                                    <span className="cov-match-key">{r.closest_key}</span>
+                                    {r.closest_label && r.closest_label !== r.closest_key && <span className="cov-match-label">{r.closest_label}</span>}
+                                  </div>
                                 : <span className="cov-no-match">Tidak ditemukan</span>}
                             </td>
-                            <td>{r.ru}</td>
-                            <td className="num"><b>{format(r.jumlah)}</b></td>
+                            <td style={{ padding: '9px 16px', fontSize: '0.825rem', whiteSpace: 'nowrap' }}>{r.ru}</td>
+                            <td style={{ padding: '9px 16px', textAlign: 'right' }}><span className="cov-num">{format(r.jumlah)}</span></td>
                           </tr>
                         ))}
                       </tbody>
