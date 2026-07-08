@@ -1757,7 +1757,7 @@ def equipment_coverage(dataset_id: str):
                     count(*) - count(r.target_node_id) AS unmatched
                 FROM kg_node dn
                 LEFT JOIN kg_relationship r
-                    ON r.source_node_id = dn.node_id
+                    ON r.target_node_id = dn.node_id
                    AND r.relationship_type = '{rel_type}'
                    AND NOT r.is_candidate
                 WHERE dn.node_type = '{domain_type}'
@@ -1815,7 +1815,7 @@ def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", lim
             WHERE dn.node_type = '{domain}'
               AND NOT EXISTS (
                 SELECT 1 FROM kg_relationship r
-                WHERE r.source_node_id = dn.node_id
+                WHERE r.target_node_id = dn.node_id
                   AND r.relationship_type = '{rel_type}'
                   AND NOT r.is_candidate
               )
