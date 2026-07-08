@@ -372,7 +372,6 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
         job.phase = "Menghapus relasi lama"
         job.progress = 5
         with scoped(dataset_id, autocommit=True) as connection:
-            connection.execute("DELETE FROM kg_relationship")
 
             # 1. RU → Equipment
             connection.execute(f"""
