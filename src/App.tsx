@@ -3068,27 +3068,44 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     setError('')
     setSelectedNode(null)
     try {
-      // Ambil sampel node dari node_type yang dipilih, lalu expand neighbors
-      const nodes = await api.search(dataset.id, '', step.nodeType, '', 5)
-      if (nodes.length === 0) {
+      // Cari node awal bertipe equipment (root rantai), ambil beberapa untuk pilihan
+      const rootType = chain.steps[0].nodeType
+      const roots = await api.search(dataset.id, '', rootType, '', 10)
+      if (roots.length === 0) {
         setGraph(emptyGraph)
-        setError(`Tidak ada node bertipe "${step.nodeType}" ditemukan di dataset ini.`)
-        setLoading(false)
+        setError(`Tidak ada node bertipe "${rootType}" ditemukan di dataset ini.`)
         return
       }
-      // Gabungkan neighbors dari beberapa node awal
-      const slices = await Promise.all(
-        nodes.slice(0, 3).map(n =>
-          api.neighbors(dataset.id, n.id, { depth: 2, includeCandidates: false, minConfidence: 0, limit: 100 })
-        )
-      )
+
+      // Depth = panjang rantai agar traversal mengikuti seluruh cabang
+      const depth = Math.max(chain.steps.length, 3)
+
+      // Coba dari beberapa root sampai menemukan yang punya tetangga banyak (bercabang)
       const allNodes = new Map<string, GraphNode>()
       const allEdges = new Map<string, GraphEdge>()
-      slices.forEach(s => {
-        s.nodes.forEach(n => allNodes.set(n.id, n))
-        s.edges.forEach(e => allEdges.set(e.id, e))
-      })
-      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: false })
+
+      for (const root of roots.slice(0, 5)) {
+        const slice = await api.neighbors(dataset.id, root.id, {
+          depth,
+          includeCandidates: false,
+          minConfidence: 0,
+          limit: 200,
+        })
+        slice.nodes.forEach(n => allNodes.set(n.id, n))
+        slice.edges.forEach(e => allEdges.set(e.id, e))
+        // Berhenti kalau sudah dapat graph yang cukup bercabang
+        if (allNodes.size >= 20) break
+      }
+
+      if (allNodes.size === 0) {
+        setGraph(emptyGraph)
+        setError('Tidak ada relasi ditemukan. Pastikan sudah upload dan rebuild relasi.')
+        return
+      }
+
+      // Jika step yang diklik bukan root, filter untuk menonjolkan node di step itu
+      // tapi tetap tampilkan seluruh graph agar cabang terlihat
+      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: allNodes.size >= 200 })
     } catch (e) {
       setError(message(e))
     } finally {
