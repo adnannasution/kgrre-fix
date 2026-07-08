@@ -619,3 +619,41 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
   .chunked-file-row { background: #1e293b; }
   .chunked-success { background: #14532d; border-color: #16a34a; }
 }
+
+/* ─── Rantai Relasi ─────────────────────────────────────────────────────────── */
+.chain-explorer { display: grid; grid-template-columns: 340px 1fr; gap: 16px; height: calc(100vh - 120px); min-height: 500px; }
+.chain-list { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-right: 4px; }
+.chain-card { border: 2px solid var(--line); border-radius: var(--r-md); padding: 14px 16px; cursor: pointer; transition: border-color .15s, background .15s; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
+.chain-card:hover { border-color: var(--chain-color, var(--blue)); background: var(--panel-2); }
+.chain-card.active { border-color: var(--chain-color, var(--blue)); background: var(--blue-soft); }
+.chain-card-title { font-size: var(--fs-sm); font-weight: 700; color: var(--text); }
+.chain-card-desc { font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; }
+.chain-steps-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-top: 4px; }
+.chain-step-pill { display: flex; align-items: center; gap: 2px; }
+.chain-arrow { color: var(--muted); font-size: 12px; padding: 0 2px; }
+.chain-pill { background: var(--line-soft); border-radius: var(--r-pill); padding: 2px 8px; font-size: 11px; color: var(--text); cursor: pointer; transition: background .12s, color .12s; }
+.chain-pill:hover { background: var(--chain-color, var(--blue)); color: #fff; }
+.chain-pill.selected { background: var(--chain-color, var(--blue)); color: #fff; font-weight: 700; }
+
+.chain-graph-panel { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); overflow: hidden; }
+.chain-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 100%; color: var(--muted); font-size: var(--fs-sm); text-align: center; padding: 40px; }
+.chain-graph-header { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.chain-graph-subtitle { font-size: var(--fs-xs); color: var(--muted); }
+.chain-steps-nav { display: flex; flex-wrap: wrap; gap: 6px; }
+.chain-step-btn { background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 4px 12px; font-size: var(--fs-xs); cursor: pointer; color: var(--text); transition: background .12s, color .12s; }
+.chain-step-btn:hover { background: var(--blue-soft); border-color: var(--blue); }
+.chain-step-btn.active { background: var(--chain-color, var(--blue)); border-color: var(--chain-color, var(--blue)); color: #fff; font-weight: 700; }
+.chain-loading { padding: 20px; text-align: center; color: var(--muted); font-size: var(--fs-sm); }
+.chain-error { padding: 12px 16px; color: #dc2626; font-size: var(--fs-sm); background: #fef2f2; margin: 8px; border-radius: var(--r-sm); }
+.chain-graph-wrap { flex: 1; display: grid; grid-template-columns: 1fr 260px; overflow: hidden; }
+.chain-node-detail { border-left: 1px solid var(--line); padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.chain-node-type { font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--blue); letter-spacing: .06em; }
+.chain-node-label { font-size: var(--fs-sm); font-weight: 700; color: var(--text); }
+.chain-node-id { font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted); word-break: break-all; }
+.chain-node-prop { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); border-top: 1px solid var(--line-soft); padding-top: 4px; }
+.chain-node-prop span:first-child { color: var(--muted); min-width: 80px; }
+.chain-node-prop span:last-child { color: var(--text); text-align: right; word-break: break-all; }
+@media (prefers-color-scheme: dark) {
+  .chain-card.active { background: #1e3a5f; }
+  .chain-error { background: #450a0a; }
+}

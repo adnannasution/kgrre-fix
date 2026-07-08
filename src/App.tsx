@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { GraphView } from './components/GraphView'
 import {
   AlertIcon,
+  ChainIcon,
   CheckIcon,
   ChevronIcon,
   DatabaseIcon,
@@ -33,7 +34,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets'
+type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -262,6 +263,7 @@ export default function App() {
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
+          <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
         </nav>
         <div className="sidebar-foot">
@@ -322,6 +324,7 @@ export default function App() {
         {page === 'graph' && <GraphExplorer dataset={active} stats={stats} />}
         {page === 'depth' && <DepthExplorer dataset={active} />}
         {page === 'review' && <DataReview dataset={active} />}
+        {page === 'chains' && <ChainExplorer dataset={active} />}
         {page === 'datasets' && (
           <DatasetManager
             datasets={datasets}
@@ -2973,8 +2976,226 @@ const depthDomainLabels: Record<string, string> = {
   issue: 'Issue / RCPS',
 }
 
+// ─── Rantai Relasi ────────────────────────────────────────────────────────────
+
+type ChainStep = { nodeType: string; label: string; relType?: string }
+type Chain = { id: string; title: string; description: string; color: string; steps: ChainStep[] }
+
+const CHAINS: Chain[] = [
+  {
+    id: 'reliability',
+    title: 'Jalur Keandalan',
+    description: 'Equipment → Observasi keandalan → ICU Issue → RKAP Program',
+    color: '#3b82f6',
+    steps: [
+      { nodeType: 'equipment', label: 'Equipment' },
+      { nodeType: 'reliability_observation', label: 'Reliability Observation', relType: 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION' },
+      { nodeType: 'icu_issue', label: 'ICU Issue', relType: 'EQUIPMENT_HAS_ICU_ISSUE' },
+      { nodeType: 'rkap_program', label: 'RKAP Program', relType: 'EQUIPMENT_HAS_RKAP_PROGRAM' },
+    ],
+  },
+  {
+    id: 'critical-bad-actor',
+    title: 'Jalur Bad Actor',
+    description: 'Equipment → Critical Equipment → Bad Actor → RCPS → Rekomendasi',
+    color: '#ef4444',
+    steps: [
+      { nodeType: 'equipment', label: 'Equipment' },
+      { nodeType: 'critical_equipment', label: 'Critical Equipment', relType: 'EQUIPMENT_HAS_CRITICAL_EQUIPMENT' },
+      { nodeType: 'bad_actor', label: 'Bad Actor', relType: 'CRITICAL_EQUIPMENT_HAS_BAD_ACTOR' },
+    ],
+  },
+  {
+    id: 'zero-clamp',
+    title: 'Jalur Zero Clamp & Inspeksi',
+    description: 'Equipment → Zero Clamp → Inspection → Pipeline Inspection',
+    color: '#f59e0b',
+    steps: [
+      { nodeType: 'equipment', label: 'Equipment' },
+      { nodeType: 'zero_clamp', label: 'Zero Clamp', relType: 'EQUIPMENT_HAS_ZERO_CLAMP' },
+      { nodeType: 'inspection', label: 'Inspection', relType: 'ZERO_CLAMP_HAS_INSPECTION' },
+      { nodeType: 'pipeline_inspection', label: 'Pipeline Inspection', relType: 'ZERO_CLAMP_HAS_PIPELINE_INSPECTION' },
+    ],
+  },
+  {
+    id: 'monitoring',
+    title: 'Jalur Monitoring Operasi',
+    description: 'Equipment → Power Steam → Monitoring Operasi',
+    color: '#10b981',
+    steps: [
+      { nodeType: 'equipment', label: 'Equipment' },
+      { nodeType: 'power_steam', label: 'Power Steam', relType: 'EQUIPMENT_HAS_POWER_STEAM' },
+      { nodeType: 'monitoring_operasi', label: 'Monitoring Operasi', relType: 'POWER_STEAM_HAS_MONITORING_OPERASI' },
+    ],
+  },
+  {
+    id: 'maintenance',
+    title: 'Jalur Pemeliharaan',
+    description: 'Equipment → Work Order / Notification → RKAP Program',
+    color: '#8b5cf6',
+    steps: [
+      { nodeType: 'equipment', label: 'Equipment' },
+      { nodeType: 'work_order', label: 'Work Order', relType: 'EQUIPMENT_HAS_WORK_ORDER' },
+      { nodeType: 'notification', label: 'Notification', relType: 'EQUIPMENT_HAS_NOTIFICATION' },
+    ],
+  },
+  {
+    id: 'readiness',
+    title: 'Jalur Kesiapan Aset',
+    description: 'Equipment → Readiness Record / Rotor / ATG',
+    color: '#06b6d4',
+    steps: [
+      { nodeType: 'equipment', label: 'Equipment' },
+      { nodeType: 'readiness_record', label: 'Readiness Record', relType: 'EQUIPMENT_HAS_READINESS_RECORD' },
+      { nodeType: 'rotor', label: 'Rotor', relType: 'EQUIPMENT_HAS_ROTOR' },
+      { nodeType: 'atg', label: 'ATG', relType: 'EQUIPMENT_HAS_ATG' },
+    ],
+  },
+]
+
+function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
+  const [selectedChain, setSelectedChain] = useState<Chain | null>(null)
+  const [selectedStep, setSelectedStep] = useState<ChainStep | null>(null)
+  const [graph, setGraph] = useState<GraphSlice>(emptyGraph)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
+
+  if (!dataset) return <NoDataset />
+
+  const loadGraph = async (chain: Chain, step: ChainStep) => {
+    setLoading(true)
+    setError('')
+    setSelectedNode(null)
+    try {
+      // Ambil sampel node dari node_type yang dipilih, lalu expand neighbors
+      const nodes = await api.search(dataset.id, '', step.nodeType, '', 5)
+      if (nodes.length === 0) {
+        setGraph(emptyGraph)
+        setError(`Tidak ada node bertipe "${step.nodeType}" ditemukan di dataset ini.`)
+        setLoading(false)
+        return
+      }
+      // Gabungkan neighbors dari beberapa node awal
+      const slices = await Promise.all(
+        nodes.slice(0, 3).map(n =>
+          api.neighbors(dataset.id, n.id, { depth: 2, includeCandidates: false, minConfidence: 0, limit: 100 })
+        )
+      )
+      const allNodes = new Map<string, GraphNode>()
+      const allEdges = new Map<string, GraphEdge>()
+      slices.forEach(s => {
+        s.nodes.forEach(n => allNodes.set(n.id, n))
+        s.edges.forEach(e => allEdges.set(e.id, e))
+      })
+      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: false })
+    } catch (e) {
+      setError(message(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleStepClick = (chain: Chain, step: ChainStep) => {
+    setSelectedChain(chain)
+    setSelectedStep(step)
+    void loadGraph(chain, step)
+  }
+
+  const handleChainClick = (chain: Chain) => {
+    handleStepClick(chain, chain.steps[0])
+  }
+
+  return (
+    <div className="chain-explorer">
+      <div className="chain-list">
+        {CHAINS.map(chain => (
+          <div
+            key={chain.id}
+            className={`chain-card ${selectedChain?.id === chain.id ? 'active' : ''}`}
+            style={{ '--chain-color': chain.color } as React.CSSProperties}
+            onClick={() => handleChainClick(chain)}
+          >
+            <div className="chain-card-title">{chain.title}</div>
+            <div className="chain-card-desc">{chain.description}</div>
+            <div className="chain-steps-row">
+              {chain.steps.map((step, i) => (
+                <span key={step.nodeType} className="chain-step-pill" onClick={e => { e.stopPropagation(); handleStepClick(chain, step) }}>
+                  {i > 0 && <span className="chain-arrow">→</span>}
+                  <span
+                    className={`chain-pill ${selectedChain?.id === chain.id && selectedStep?.nodeType === step.nodeType ? 'selected' : ''}`}
+                  >
+                    {step.label}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="chain-graph-panel">
+        {!selectedChain && (
+          <div className="chain-empty">
+            <ChainIcon style={{ width: 48, height: 48, opacity: 0.3 }} />
+            <p>Pilih rantai relasi di kiri untuk melihat knowledge graph-nya</p>
+          </div>
+        )}
+        {selectedChain && (
+          <>
+            <div className="chain-graph-header">
+              <div>
+                <strong>{selectedChain.title}</strong>
+                {selectedStep && <span className="chain-graph-subtitle"> · Node: <em>{selectedStep.label}</em></span>}
+              </div>
+              <div className="chain-steps-nav">
+                {selectedChain.steps.map(step => (
+                  <button
+                    key={step.nodeType}
+                    className={`chain-step-btn ${selectedStep?.nodeType === step.nodeType ? 'active' : ''}`}
+                    onClick={() => handleStepClick(selectedChain, step)}
+                    style={{ '--chain-color': selectedChain.color } as React.CSSProperties}
+                  >
+                    {step.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {loading && <div className="chain-loading">Memuat graph…</div>}
+            {error && <div className="chain-error">{error}</div>}
+            {!loading && !error && graph.nodes.length > 0 && (
+              <div className="chain-graph-wrap">
+                <GraphView
+                  graph={graph}
+                  highlight={null}
+                  selectedNode={selectedNode}
+                  onSelectNode={setSelectedNode}
+                  showLabels
+                />
+                {selectedNode && (
+                  <div className="chain-node-detail">
+                    <div className="chain-node-type">{selectedNode.kind}</div>
+                    <div className="chain-node-label">{selectedNode.label}</div>
+                    <div className="chain-node-id">{selectedNode.id}</div>
+                    {selectedNode.properties && Object.entries(selectedNode.properties).slice(0, 8).map(([k, v]) => (
+                      <div key={k} className="chain-node-prop"><span>{k}</span><span>{String(v)}</span></div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {!loading && !error && graph.nodes.length === 0 && (
+              <div className="chain-empty"><p>Tidak ada data untuk node ini. Coba upload dan rebuild relasi.</p></div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi' })[page]
 }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }
