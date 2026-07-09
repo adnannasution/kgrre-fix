@@ -259,17 +259,17 @@ export default function App() {
         </div>
         <nav>
           <Nav icon={<GridIcon />} label="Overview" active={page === 'overview'} onClick={() => setPage('overview')} />
-          <Nav icon={<UploadIcon />} label="Import Center" active={page === 'import'} onClick={() => setPage('import')} />
           <Nav icon={<DatabaseIcon />} label="Executive RU" active={page === 'executive'} onClick={() => setPage('executive')} />
           <Nav icon={<GridIcon />} label="Reliability Insight" active={page === 'insight'} onClick={() => setPage('insight')} />
           <Nav icon={<EquipmentIcon />} label="Equipment 360" active={page === 'equipment'} onClick={() => setPage('equipment')} />
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
+          <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
+          <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
-          <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
-          <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
+          <Nav icon={<UploadIcon />} label="Import Center" active={page === 'import'} onClick={() => setPage('import')} />
         </nav>
         <div className="sidebar-foot">
           <span className="eyebrow">Active dataset</span>
@@ -277,19 +277,6 @@ export default function App() {
             <option value="">Belum ada dataset</option>
             {datasets.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
-          <div className="density-control">
-            <span className="eyebrow">Kerapatan <b>{Math.round(density * 100)}%</b></span>
-            <input
-              type="range"
-              min={0.8}
-              max={1.25}
-              step={0.05}
-              value={density}
-              onChange={(event) => setDensity(Number(event.target.value))}
-              aria-label="Kerapatan tampilan"
-            />
-            <div className="ends"><span>Ringkas</span><span>Lega</span></div>
-          </div>
           <div className="local-chip"><span /> Railway · PostgreSQL</div>
         </div>
       </aside>
