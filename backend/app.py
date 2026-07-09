@@ -1844,6 +1844,7 @@ def analysis(dataset_id: str, name: str, limit: int = Query(200, ge=1, le=2000))
 # Kolom equipment_raw untuk domain yang menggunakan nama kolom berbeda
 _EQ_COL_OVERRIDE: dict[str, str] = {
     'EQUIPMENT_HAS_BAD_ACTOR':        'tag_raw',
+    'EQUIPMENT_HAS_ZERO_CLAMP':       'tag_raw',
     'EQUIPMENT_HAS_MONITORING_OPERASI': 'equipment_process_raw',
     'EQUIPMENT_HAS_ATG':              'tag_tangki',
 }

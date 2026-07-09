@@ -2240,6 +2240,7 @@ def _build_zero_clamp_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
         SELECT zc_id, 'zero_clamp', tag_raw,
                coalesce(nullif(description,''), tag_raw), 'zero_clamp',
                json_object('refinery_unit', refinery_unit, 'tag_raw', tag_raw,
+                   'equipment_raw', equipment_raw,
                    'services', services, 'type_damage', type_damage, 'posisi', posisi,
                    'type_perbaikan', type_perbaikan, 'tanggal_dipasang', tanggal_dipasang,
                    'tanggal_dilepas', tanggal_dilepas, 'tanggal_rencana', tanggal_rencana,
