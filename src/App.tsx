@@ -3209,6 +3209,32 @@ const CHAINS: Chain[] = [
       { nodeType: 'atg', label: 'ATG', relType: 'EQUIPMENT_HAS_ATG' },
     ],
   },
+  {
+    id: 'infrastruktur',
+    title: 'Jalur Kesiapan Infrastruktur',
+    description: 'Readiness Jetty / SPM / Tangki → RTL Workplan',
+    color: '#0ea5e9',
+    steps: [
+      { nodeType: 'readiness_jetty', label: 'Readiness Jetty' },
+      { nodeType: 'readiness_spm', label: 'Readiness SPM' },
+      { nodeType: 'readiness_tank', label: 'Readiness Tank' },
+      { nodeType: 'jetty_workplan', label: 'Jetty Workplan', relType: 'READINESS_JETTY_HAS_WORKPLAN' },
+      { nodeType: 'spm_workplan', label: 'SPM Workplan', relType: 'READINESS_SPM_HAS_WORKPLAN' },
+      { nodeType: 'tank_workplan', label: 'Tank Workplan', relType: 'READINESS_TANK_HAS_WORKPLAN' },
+    ],
+  },
+  {
+    id: 'perizinan',
+    title: 'Jalur Perizinan & Inspeksi',
+    description: 'PLO Permit → Pipeline Inspection → TKDN / OA Availability',
+    color: '#d946ef',
+    steps: [
+      { nodeType: 'plo_permit', label: 'PLO Permit' },
+      { nodeType: 'pipeline_inspection', label: 'Pipeline Inspection' },
+      { nodeType: 'tkdn', label: 'TKDN' },
+      { nodeType: 'oa_availability', label: 'OA Availability' },
+    ],
+  },
 ]
 
 function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
