@@ -1337,8 +1337,52 @@ def ru_summary(dataset_id: str):
                 key = _ru_key(row.get("refinery_unit"))
                 if key in readiness_summary:
                     row.update(readiness_summary[key])
+
+            # Fallback: hitung langsung dari graph jika ETL summary tidak tersedia
+            if not equipment_summary:
+                equipment_summary = rows(connection, """
+                    SELECT
+                        coalesce(nullif(properties_json->>'refinery_unit',''), 'Unknown') AS refinery_unit,
+                        count(*) AS equipment_count
+                    FROM kg_node WHERE node_type='equipment'
+                    GROUP BY refinery_unit
+                    ORDER BY equipment_count DESC
+                """)
+                # Gabungkan maintenance orders per RU
+                mo_by_ru = {r['refinery_unit']: r['c'] for r in rows(connection, """
+                    SELECT coalesce(nullif(properties_json->>'refinery_unit',''), 'Unknown') AS refinery_unit,
+                           count(*) AS c
+                    FROM kg_node WHERE node_type='maintenance_order'
+                    GROUP BY refinery_unit
+                """)}
+                rkap_by_ru = {r['refinery_unit']: r['c'] for r in rows(connection, """
+                    SELECT coalesce(nullif(properties_json->>'refinery_unit',''), 'Unknown') AS refinery_unit,
+                           count(*) AS c
+                    FROM kg_node WHERE node_type='rkap_program'
+                    GROUP BY refinery_unit
+                """)}
+                equipment_summary = [
+                    {
+                        **row,
+                        'maintenance_orders': mo_by_ru.get(row['refinery_unit'], 0),
+                        'rkap_programs': rkap_by_ru.get(row['refinery_unit'], 0),
+                        'unmatched_identifiers': 0,
+                    }
+                    for row in equipment_summary
+                ]
+                # Juga gabungkan readiness
+                readiness_summary = _readiness_association_summary(connection)
+                for row in equipment_summary:
+                    key = _ru_key(row.get("refinery_unit"))
+                    if key in readiness_summary:
+                        row.update(readiness_summary[key])
+
+            refinery_units = _analysis_rows(connection, "refinery_units", 100)
+            if not refinery_units:
+                refinery_units = [{'refinery_unit': r['refinery_unit']} for r in equipment_summary]
+
             return {
-                "refinery_units": _analysis_rows(connection, "refinery_units", 100),
+                "refinery_units": refinery_units,
                 "equipment_summary": equipment_summary,
                 "data_coverage": _analysis_rows(connection, "ru_data_coverage", 1000),
                 "relationship_quality": _analysis_rows(connection, "ru_relationship_quality", 1000),
