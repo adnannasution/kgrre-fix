@@ -414,6 +414,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
                 ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
                 ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
+                ('power_steam',             'EQUIPMENT_HAS_POWER_STEAM',             'equipment_raw'),
             ]:
                 connection.execute(f"""
                     INSERT INTO kg_relationship
