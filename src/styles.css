@@ -655,6 +655,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .chain-node-type { font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--blue); letter-spacing: .06em; }
 .chain-node-label { font-size: var(--fs-sm); font-weight: 700; color: var(--text); }
 .chain-node-id { font-family: var(--mono); font-size: var(--fs-xs); color: var(--muted); word-break: break-all; }
+.chain-eq-search { padding: 10px 14px 4px; border-bottom: 1px solid var(--line-soft); position: relative; }
+.chain-eq-search .search-dropdown { position: absolute; left: 14px; right: 14px; top: 46px; width: auto; z-index: 50; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); box-shadow: 0 8px 24px #0002; max-height: 240px; overflow-y: auto; }
+.chain-eq-search .search-dropdown-item { padding: 8px 12px; cursor: pointer; font-size: var(--fs-sm); border-bottom: 1px solid var(--line-soft); }
+.chain-eq-search .search-dropdown-item:hover { background: var(--blue-soft); }
+.chain-picked-eq { font-size: var(--fs-xs); color: var(--blue); margin-top: 4px; }
 .chain-node-prop { display: flex; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); border-top: 1px solid var(--line-soft); padding-top: 4px; }
 .chain-node-prop span:first-child { color: var(--muted); min-width: 80px; }
 .chain-node-prop span:last-child { color: var(--text); text-align: right; word-break: break-all; }
