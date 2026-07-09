@@ -3532,10 +3532,38 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
     domain_counts: dict = {}
     for domain in ['reliability_observation','rkap_program','equipment_issue','icu_issue',
                    'bad_actor','critical_equipment','readiness_record','monitoring_operasi',
-                   'power_steam','paf_issue','rotor','atg','zero_clamp']:
+                   'power_steam','paf_issue','rotor','atg','zero_clamp',
+                   'readiness_jetty','readiness_spm','readiness_tank',
+                   'jetty_workplan','spm_workplan','tank_workplan']:
         r = rows(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type=%s AND properties_json->>'refinery_unit' ILIKE %s", [domain, ru_like])
         if r and int(r[0]['c']) > 0:
             domain_counts[domain] = int(r[0]['c'])
+
+    # Readiness infrastruktur — status breakdown per tipe
+    readiness_infra = {}
+    for rtype in ['readiness_jetty', 'readiness_spm', 'readiness_tank']:
+        status_rows = rows(connection, """
+            SELECT properties_json->>'status_operation' AS status,
+                   count(*) AS c
+            FROM kg_node WHERE node_type=%s
+              AND properties_json->>'refinery_unit' ILIKE %s
+            GROUP BY status
+        """, [rtype, ru_like])
+        if status_rows:
+            readiness_infra[rtype] = {r.get('status') or 'Unknown': int(r.get('c') or 0) for r in status_rows}
+
+    # Workplan RTL — status breakdown per tipe
+    workplan_infra = {}
+    for wtype in ['jetty_workplan', 'spm_workplan', 'tank_workplan']:
+        wp_rows = rows(connection, """
+            SELECT properties_json->>'status' AS status,
+                   count(*) AS c
+            FROM kg_node WHERE node_type=%s
+              AND properties_json->>'refinery_unit' ILIKE %s
+            GROUP BY status
+        """, [wtype, ru_like])
+        if wp_rows:
+            workplan_infra[wtype] = {r.get('status') or 'Unknown': int(r.get('c') or 0) for r in wp_rows}
     rel_obs = rows(connection, """
         SELECT count(*) AS total,
                sum(CASE WHEN (properties_json->>'derived_is_top_risk')='true' THEN 1 ELSE 0 END) AS top_risk,
@@ -3628,6 +3656,8 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         'reliability': rel_obs[0] if rel_obs else {},
         'rkap': rkap[0] if rkap else {},
         'bad_actors': bad,
+        'readiness_infra': readiness_infra,
+        'workplan_infra': workplan_infra,
         # KG-specific metrics
         'kg': {
             'total_equipment': total_eq,
@@ -3775,9 +3805,26 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
         rkap = ctx.get('rkap', {})
         bad = ctx.get('bad_actors', [])
         kg = ctx.get('kg', {})
+        readiness_infra = ctx.get('readiness_infra', {})
+        workplan_infra = ctx.get('workplan_infra', {})
 
         top_eq_lines = '\n'.join(f"  {i+1}. {e.get('label','')} ({e.get('business_key','')}) — {e.get('rel_count',0)} relasi, tipe: {e.get('eq_type','')}" for i, e in enumerate(top_eq))
         domain_lines = '\n'.join(f"  - {k}: {_fmt_int(v)} baris" for k, v in domain_counts.items())
+
+        def _infra_lines(infra: dict, label_map: dict) -> str:
+            lines = []
+            for k, statuses in infra.items():
+                label = label_map.get(k, k)
+                status_str = ', '.join(f"{s}: {c}" for s, c in statuses.items() if s and c)
+                lines.append(f"  - {label}: {status_str or '(tidak ada data status)'}")
+            return '\n'.join(lines)
+
+        readiness_infra_lines = _infra_lines(readiness_infra, {
+            'readiness_jetty': 'Jetty', 'readiness_spm': 'SPM', 'readiness_tank': 'Tangki'
+        })
+        workplan_infra_lines = _infra_lines(workplan_infra, {
+            'jetty_workplan': 'Jetty RTL Workplan', 'spm_workplan': 'SPM RTL Workplan', 'tank_workplan': 'Tangki RTL Workplan'
+        })
         bad_lines = '\n'.join(f"  - {b.get('fm','')}: {b.get('c','')}x" for b in bad[:8])
         multi_dom_lines = '\n'.join(
             f"  - {e.get('label','')} ({e.get('business_key','')}) → {e.get('domain_count','')} domain: {e.get('domains','')}"
@@ -3825,6 +3872,12 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
 
 ### Bad Actor (Failure Mode Teratas)
 {bad_lines or '  (tidak ada data bad actor)'}
+
+### Kesiapan Infrastruktur (Readiness Status — Jetty / SPM / Tangki)
+{readiness_infra_lines or '  (tidak ada data readiness infrastruktur untuk RU ini)'}
+
+### RTL Action Plan Infrastruktur (Workplan — Item Belum Selesai)
+{workplan_infra_lines or '  (tidak ada data workplan infrastruktur untuk RU ini)'}
 """
         scope_desc = f"Refinery Unit **{ru}**"
 
