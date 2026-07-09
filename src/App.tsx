@@ -1073,16 +1073,20 @@ function GraphExplorer({ dataset, stats }: { dataset?: DatasetSummary; stats?: D
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [queryPanelOpen, setQueryPanelOpen] = useState(false)
 
+  const [searching, setSearching] = useState(false)
   const searchSeq = useRef(0)
   const search = useCallback(async () => {
     if (!dataset) return
     const seq = ++searchSeq.current
+    setSearching(true)
     try {
       const found = await api.search(dataset.id, query, nodeType, '', 30, refineryUnit, equipmentCode)
       if (seq === searchSeq.current) setResults(found)
     } catch (reason) {
       console.error('Pencarian gagal', reason)
       if (seq === searchSeq.current) setResults([])
+    } finally {
+      if (seq === searchSeq.current) setSearching(false)
     }
   }, [dataset, query, nodeType, refineryUnit, equipmentCode])
   useEffect(() => {
@@ -1287,6 +1291,7 @@ function GraphExplorer({ dataset, stats }: { dataset?: DatasetSummary; stats?: D
           <input value={equipmentCode} onChange={(event) => setEquipmentCode(event.target.value)} placeholder="Equipment code" />
         </div>
         <div className="result-list">
+          {searching && <div className="search-spinner"><span className="spinner-inline" />Mencari…</div>}
           {results.map((node) => (
             <button key={node.id} className={root?.id === node.id ? 'active' : ''} onClick={() => void loadGraph(node)}>
               <span className="result-icon"><EquipmentIcon /></span>

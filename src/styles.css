@@ -541,6 +541,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .computing-banner { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); color: var(--muted); font-size: 11px; }
 .spinner { width: 16px; height: 16px; flex: none; border: 2px solid var(--line); border-top-color: var(--mint); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.spinner-inline { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+.search-spinner { display: flex; align-items: center; gap: 6px; padding: 8px 12px; color: var(--muted); font-size: var(--fs-xs); }
 
 /* skeleton shimmer — alternative to the spinner for heavy tables */
 .skeleton { position: relative; overflow: hidden; background: var(--line-soft); border-radius: var(--r-sm); }
