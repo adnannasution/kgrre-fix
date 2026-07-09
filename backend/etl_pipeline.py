@@ -101,14 +101,19 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
         return 'rotor'
 
     # Readiness subtypes — cek SEBELUM readiness umum (kolom status_operation sama)
-    if has('status_operation', 'status_operasi', 'status_item') and \
-            has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki'):
+    if has('status_operation', 'status_operasi', 'status_item', 'status_operational_tangki') and \
+            (has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki') or
+             has_sub('tangki')):
         return 'readiness_tank'
     if has('status_operation', 'status_operasi', 'status_item') and \
-            has('dermaga', 'nama_dermaga', 'jetty', 'nama_jetty', 'jenis_dermaga'):
+            (has('dermaga', 'nama_dermaga', 'jetty', 'nama_jetty', 'jenis_dermaga') or
+             has_sub('jetty') or has('tuks', 'status_tuks', 'nomor_surat_tuks') or
+             has_sub('trestle') or has_sub('breasting_dolphin')):
         return 'readiness_jetty'
     if has('status_operation', 'status_operasi', 'status_item') and \
-            has('spm', 'single_point_mooring', 'mooring', 'nama_spm'):
+            (has('spm', 'single_point_mooring', 'nama_spm') or has_sub('spm') or
+             has_sub('buoy') or has_sub('hawser') or has_sub('swivel') or
+             has_sub('floating_hose') or has_sub('plem') or has_sub('subsea')):
         return 'readiness_spm'
 
     # Workplan types — program_kerja dengan target/progres
@@ -122,7 +127,7 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     # Readiness — status_operation sangat khas dan tidak ada di domain lain
     if has('status_operation', 'status_operasi'):
         return 'readiness'
-    if has('status_item', 'rtl') and has('period_date', 'month_update'):
+    if has('status_item', 'rtl') and has('period_date', 'month_update') and not has('rtl_action_plan', 'status_rtl'):
         return 'readiness'
 
     # OA Availability
@@ -1785,9 +1790,9 @@ def _build_workplan_nodes(
         return
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant', default='NULL')})"
-    name_expr = _cs(c, 'nama_program','program_name','program','nama_kegiatan','kegiatan', default='NULL')
-    period_expr = _cs(c, 'period','tahun','year','bulan','month','tanggal','date', cast=True, default='NULL')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant','unit', default='NULL')})"
+    name_expr = _cs(c, 'nama_program','program_name','program','nama_kegiatan','kegiatan','item', default='NULL')
+    period_expr = _cs(c, 'period','periode','tahun','year','bulan','month','tanggal','date', cast=True, default='NULL')
     con.execute(f"""
         CREATE TABLE {stage_table} AS
         SELECT
