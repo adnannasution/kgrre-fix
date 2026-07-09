@@ -3539,6 +3539,34 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         if r and int(r[0]['c']) > 0:
             domain_counts[domain] = int(r[0]['c'])
 
+    # Work Order — ringkasan per status
+    wo = rows(connection, """
+        SELECT count(*) AS total,
+               sum(CASE WHEN properties_json->>'derived_is_open_order'='true' THEN 1 ELSE 0 END) AS open_count,
+               sum(CASE WHEN properties_json->>'derived_status_bucket' IN ('WAMA','WASR') THEN 1 ELSE 0 END) AS waiting_material,
+               sum(CASE WHEN properties_json->>'order_type' IS NOT NULL THEN 1 ELSE 0 END) AS with_type,
+               sum(CASE WHEN (properties_json->>'derived_planned_cost')::float > 0
+                        AND properties_json->>'derived_planned_cost' ~ '^[0-9]' THEN
+                        (properties_json->>'derived_planned_cost')::float ELSE 0 END) AS total_planned_cost
+        FROM kg_node WHERE node_type='work_order'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+    wo_by_type = rows(connection, """
+        SELECT properties_json->>'order_type' AS otype, count(*) AS c
+        FROM kg_node WHERE node_type='work_order'
+          AND properties_json->>'refinery_unit' ILIKE %s
+          AND properties_json->>'order_type' IS NOT NULL
+        GROUP BY otype ORDER BY c DESC LIMIT 8
+    """, [ru_like])
+
+    # Notification — ringkasan
+    notif = rows(connection, """
+        SELECT count(*) AS total,
+               count(DISTINCT properties_json->>'notification_type') AS types
+        FROM kg_node WHERE node_type='notification'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+
     # Readiness infrastruktur — status breakdown per tipe
     readiness_infra = {}
     for rtype in ['readiness_jetty', 'readiness_spm', 'readiness_tank']:
@@ -3656,6 +3684,9 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         'reliability': rel_obs[0] if rel_obs else {},
         'rkap': rkap[0] if rkap else {},
         'bad_actors': bad,
+        'work_order': wo[0] if wo else {},
+        'wo_by_type': wo_by_type,
+        'notification': notif[0] if notif else {},
         'readiness_infra': readiness_infra,
         'workplan_infra': workplan_infra,
         # KG-specific metrics
@@ -3805,6 +3836,9 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
         rkap = ctx.get('rkap', {})
         bad = ctx.get('bad_actors', [])
         kg = ctx.get('kg', {})
+        wo_ctx = ctx.get('work_order', {})
+        wo_by_type = ctx.get('wo_by_type', [])
+        notif_ctx = ctx.get('notification', {})
         readiness_infra = ctx.get('readiness_infra', {})
         workplan_infra = ctx.get('workplan_infra', {})
 
@@ -3872,6 +3906,17 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
 
 ### Bad Actor (Failure Mode Teratas)
 {bad_lines or '  (tidak ada data bad actor)'}
+
+### Work Order (SAP)
+- Total work order: {_fmt_int(wo_ctx.get('total', 0))}
+- Work order masih open: {_fmt_int(wo_ctx.get('open_count', 0))}
+- Menunggu material/spare (WAMA/WASR): {_fmt_int(wo_ctx.get('waiting_material', 0))}
+- Total biaya planned: Rp {round(float(wo_ctx.get('total_planned_cost') or 0) / 1e9, 1)} miliar
+- Breakdown per tipe order: {', '.join(f"{r.get('otype','')}: {r.get('c',0)}" for r in wo_by_type) or '(tidak ada)'}
+
+### Notifikasi (SAP)
+- Total notifikasi: {_fmt_int(notif_ctx.get('total', 0))}
+- Jumlah tipe notifikasi: {_fmt_int(notif_ctx.get('types', 0))}
 
 ### Kesiapan Infrastruktur (Readiness Status — Jetty / SPM / Tangki)
 {readiness_infra_lines or '  (tidak ada data readiness infrastruktur untuk RU ini)'}
