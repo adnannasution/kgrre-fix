@@ -529,21 +529,24 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
 
             job.progress = 85
 
-            # RU → domain nodes by refinery_unit
-            for domain_type, rel_type in [
-                ('rkap_program',      'REFINERY_UNIT_HAS_RKAP_PROGRAM'),
-                ('maintenance_order', 'REFINERY_UNIT_HAS_MAINTENANCE_ORDER'),
-                ('equipment_issue',   'REFINERY_UNIT_HAS_ISSUE'),
-                ('readiness_record',  'REFINERY_UNIT_HAS_READINESS_RECORD'),
-                ('oa_availability',   'REFINERY_UNIT_HAS_OA_AVAILABILITY'),
-                ('oa_issue',          'REFINERY_UNIT_HAS_OA_ISSUE'),
-                ('plo_permit',        'REFINERY_UNIT_HAS_PLO_PERMIT'),
-                ('paf',              'REFINERY_UNIT_HAS_PAF'),
-                ('paf_issue',        'REFINERY_UNIT_HAS_PAF_ISSUE'),
-                ('tkdn',             'REFINERY_UNIT_HAS_TKDN'),
-                ('zero_clamp',       'REFINERY_UNIT_HAS_ZERO_CLAMP'),
-                ('power_steam',      'REFINERY_UNIT_HAS_POWER_STEAM'),
-            ]:
+            # RU → domain nodes — auto-discover semua node type yang punya refinery_unit property
+            # Kecualikan node yang memang bukan domain laporan
+            _RU_EXCLUDE = {'equipment', 'refinery_unit', 'plant', 'functional_location'}
+            _RU_REL_OVERRIDE = {
+                'equipment_issue': 'REFINERY_UNIT_HAS_ISSUE',
+                'icu_issue':       'REFINERY_UNIT_HAS_ICU_ISSUE',
+            }
+            domain_node_types = rows(connection, """
+                SELECT DISTINCT node_type FROM kg_node
+                WHERE properties_json->>'refinery_unit' IS NOT NULL
+                  AND node_type != ALL(%s)
+            """, [list(_RU_EXCLUDE)])
+            for row in domain_node_types:
+                domain_type = row['node_type']
+                rel_type = _RU_REL_OVERRIDE.get(
+                    domain_type,
+                    'REFINERY_UNIT_HAS_' + domain_type.upper()
+                )
                 connection.execute(f"""
                     INSERT INTO kg_relationship
                         (relationship_id, source_node_id, target_node_id,
