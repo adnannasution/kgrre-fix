@@ -1791,8 +1791,8 @@ def _build_workplan_nodes(
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','plant', default='NULL')})"
-    name_expr = _cs(c, 'nama_program','program_name','program','nama_kegiatan','kegiatan', default='NULL')
-    period_expr = _cs(c, 'period','tahun','year','bulan','month','tanggal','date', cast=True, default='NULL')
+    name_expr = _cs(c, 'nama_program','program_name','program','nama_kegiatan','kegiatan','item', default='NULL')
+    period_expr = _cs(c, 'period','periode','tahun','year','bulan','month','tanggal','date', cast=True, default='NULL')
     con.execute(f"""
         CREATE TABLE {stage_table} AS
         SELECT
