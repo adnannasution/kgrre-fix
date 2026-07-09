@@ -3256,7 +3256,7 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
       const stepIdx = chain.steps.findIndex(s => s.nodeType === step.nodeType)
       // Depth ke depan (sisa rantai) + ke belakang (konteks sebelumnya)
       const depthForward = chain.steps.length - stepIdx
-      const depth = Math.max(depthForward + 1, 3)
+      const depth = Math.min(Math.max(depthForward + 1, 3), 5)
 
       const roots = await api.search(dataset.id, '', step.nodeType, '', 10)
       if (roots.length === 0) {
