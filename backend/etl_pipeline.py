@@ -101,7 +101,7 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
         return 'rotor'
 
     # Readiness subtypes — cek SEBELUM readiness umum (kolom status_operation sama)
-    if has('status_operation', 'status_operasi', 'status_item') and \
+    if has('status_operation', 'status_operasi', 'status_item', 'status_operational_tangki') and \
             (has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki') or
              has_sub('tangki')):
         return 'readiness_tank'
