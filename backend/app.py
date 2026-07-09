@@ -427,10 +427,10 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                     FROM kg_node eq, kg_node dn
                     WHERE eq.node_type = 'equipment'
                       AND dn.node_type = '{domain_type}'
-                      AND regexp_replace(trim(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', '')
-                        = regexp_replace(trim(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', '')
-                      AND trim(coalesce(eq.properties_json->>'equipment_code_raw','')) != ''
-                      AND trim(coalesce(dn.properties_json->>'{eq_prop}','')) != ''
+                      AND regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '[^A-Z0-9]+', '', 'g') != ''
+                      AND regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '[^A-Z0-9]+', '', 'g')
+                        = regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '[^A-Z0-9]+', '', 'g')
+                      AND regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '[^A-Z0-9]+', '', 'g') != ''
                     ON CONFLICT DO NOTHING
                 """)
 
