@@ -538,6 +538,11 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 ('oa_availability',   'REFINERY_UNIT_HAS_OA_AVAILABILITY'),
                 ('oa_issue',          'REFINERY_UNIT_HAS_OA_ISSUE'),
                 ('plo_permit',        'REFINERY_UNIT_HAS_PLO_PERMIT'),
+                ('paf',              'REFINERY_UNIT_HAS_PAF'),
+                ('paf_issue',        'REFINERY_UNIT_HAS_PAF_ISSUE'),
+                ('tkdn',             'REFINERY_UNIT_HAS_TKDN'),
+                ('zero_clamp',       'REFINERY_UNIT_HAS_ZERO_CLAMP'),
+                ('power_steam',      'REFINERY_UNIT_HAS_POWER_STEAM'),
             ]:
                 connection.execute(f"""
                     INSERT INTO kg_relationship
