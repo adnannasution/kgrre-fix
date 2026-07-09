@@ -2706,14 +2706,6 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
                         >
                           {rebuilding === dataset.id ? '⏳ Membangun…' : '🔗 Rebuild Relasi'}
                         </button>
-                        <button
-                          className="icon-button danger"
-                          onClick={() => void remove(dataset)}
-                          disabled={deleting === dataset.id}
-                          title="Hapus dataset dan semua node-nya"
-                        >
-                          {deleting === dataset.id ? '…' : <TrashIcon />}
-                        </button>
                       </div>
                     </td>
                   </tr>
