@@ -28,7 +28,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const detail = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(detail.detail || 'Permintaan gagal.')
+    const msg = detail?.detail
+    throw new Error(typeof msg === 'string' ? msg : typeof msg === 'object' ? JSON.stringify(msg) : 'Permintaan gagal.')
   }
   return response.json()
 }
