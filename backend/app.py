@@ -3534,7 +3534,9 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
                    'bad_actor','critical_equipment','readiness_record','monitoring_operasi',
                    'power_steam','paf_issue','rotor','atg','zero_clamp',
                    'readiness_jetty','readiness_spm','readiness_tank',
-                   'jetty_workplan','spm_workplan','tank_workplan']:
+                   'jetty_workplan','spm_workplan','tank_workplan',
+                   'tkdn','oa_availability','plo_permit','pipeline_inspection',
+                   'work_order','notification']:
         r = rows(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type=%s AND properties_json->>'refinery_unit' ILIKE %s", [domain, ru_like])
         if r and int(r[0]['c']) > 0:
             domain_counts[domain] = int(r[0]['c'])
@@ -3592,6 +3594,53 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         """, [wtype, ru_like])
         if wp_rows:
             workplan_infra[wtype] = {r.get('status') or 'Unknown': int(r.get('c') or 0) for r in wp_rows}
+
+    # TKDN — ringkasan per RU
+    tkdn = rows(connection, """
+        SELECT count(*) AS total,
+               avg(CASE WHEN properties_json->>'persentase' ~ '^[0-9]'
+                   THEN (properties_json->>'persentase')::float END) AS avg_pct,
+               sum(CASE WHEN properties_json->>'nominal' ~ '^[0-9]'
+                   THEN (properties_json->>'nominal')::float ELSE 0 END) AS total_nominal
+        FROM kg_node WHERE node_type='tkdn'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+
+    # OA Availability — rata-rata value_perc per RU
+    oa = rows(connection, """
+        SELECT count(*) AS total,
+               avg(CASE WHEN properties_json->>'value_perc' ~ '^[0-9]'
+                   THEN (properties_json->>'value_perc')::float END) AS avg_value,
+               avg(CASE WHEN properties_json->>'actual_target' ~ '^[0-9]'
+                   THEN (properties_json->>'actual_target')::float END) AS avg_target
+        FROM kg_node WHERE node_type='oa_availability'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+
+    # PLO Permit — jumlah, expired vs valid
+    plo = rows(connection, """
+        SELECT count(*) AS total,
+               sum(CASE WHEN properties_json->>'masa_berlaku' IS NOT NULL
+                        AND properties_json->>'masa_berlaku' < to_char(CURRENT_DATE,'YYYY-MM-DD')
+                   THEN 1 ELSE 0 END) AS expired
+        FROM kg_node WHERE node_type='plo_permit'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+
+    # Pipeline Inspection — jumlah, rem_life rendah, temp_repair
+    pipeline = rows(connection, """
+        SELECT count(*) AS total,
+               sum(CASE WHEN properties_json->>'temp_repair' ~ '^[1-9]'
+                   THEN 1 ELSE 0 END) AS has_temp_repair,
+               avg(CASE WHEN properties_json->>'rem_life' ~ '^[0-9]'
+                   THEN (properties_json->>'rem_life')::float END) AS avg_rem_life,
+               sum(CASE WHEN properties_json->>'rem_life' ~ '^[0-9]'
+                        AND (properties_json->>'rem_life')::float < 5
+                   THEN 1 ELSE 0 END) AS near_eol
+        FROM kg_node WHERE node_type='pipeline_inspection'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+
     rel_obs = rows(connection, """
         SELECT count(*) AS total,
                sum(CASE WHEN (properties_json->>'derived_is_top_risk')='true' THEN 1 ELSE 0 END) AS top_risk,
@@ -3689,6 +3738,10 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         'notification': notif[0] if notif else {},
         'readiness_infra': readiness_infra,
         'workplan_infra': workplan_infra,
+        'tkdn': tkdn[0] if tkdn else {},
+        'oa': oa[0] if oa else {},
+        'plo': plo[0] if plo else {},
+        'pipeline': pipeline[0] if pipeline else {},
         # KG-specific metrics
         'kg': {
             'total_equipment': total_eq,
@@ -3859,6 +3912,10 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
         workplan_infra_lines = _infra_lines(workplan_infra, {
             'jetty_workplan': 'Jetty RTL Workplan', 'spm_workplan': 'SPM RTL Workplan', 'tank_workplan': 'Tangki RTL Workplan'
         })
+        tkdn_ctx = ctx.get('tkdn', {})
+        oa_ctx = ctx.get('oa', {})
+        plo_ctx = ctx.get('plo', {})
+        pipeline_ctx = ctx.get('pipeline', {})
         bad_lines = '\n'.join(f"  - {b.get('fm','')}: {b.get('c','')}x" for b in bad[:8])
         multi_dom_lines = '\n'.join(
             f"  - {e.get('label','')} ({e.get('business_key','')}) → {e.get('domain_count','')} domain: {e.get('domains','')}"
@@ -3923,6 +3980,27 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
 
 ### RTL Action Plan Infrastruktur (Workplan — Item Belum Selesai)
 {workplan_infra_lines or '  (tidak ada data workplan infrastruktur untuk RU ini)'}
+
+### TKDN (Tingkat Komponen Dalam Negeri)
+- Total rekaman TKDN: {_fmt_int(tkdn_ctx.get('total', 0))}
+- Rata-rata persentase TKDN: {round(float(tkdn_ctx.get('avg_pct') or 0), 1)}%
+- Total nominal TKDN: Rp {round(float(tkdn_ctx.get('total_nominal') or 0) / 1e9, 2)} miliar
+
+### OA Availability (Overall Availability)
+- Total rekaman OA: {_fmt_int(oa_ctx.get('total', 0))}
+- Rata-rata value OA aktual: {round(float(oa_ctx.get('avg_value') or 0), 1)}%
+- Rata-rata target OA: {round(float(oa_ctx.get('avg_target') or 0), 1)}%
+
+### PLO Permit (Izin Operasi)
+- Total izin PLO: {_fmt_int(plo_ctx.get('total', 0))}
+- Izin kadaluarsa: {_fmt_int(plo_ctx.get('expired', 0))}
+- Izin masih berlaku: {_fmt_int(int(plo_ctx.get('total') or 0) - int(plo_ctx.get('expired') or 0))}
+
+### Pipeline Inspection (Pemeriksaan Pipa)
+- Total rekaman inspeksi pipa: {_fmt_int(pipeline_ctx.get('total', 0))}
+- Pipa dengan temporary repair: {_fmt_int(pipeline_ctx.get('has_temp_repair', 0))}
+- Rata-rata remaining life: {round(float(pipeline_ctx.get('avg_rem_life') or 0), 1)} tahun
+- Pipa mendekati end-of-life (rem_life < 5 tahun): {_fmt_int(pipeline_ctx.get('near_eol', 0))}
 """
         scope_desc = f"Refinery Unit **{ru}**"
 
