@@ -111,7 +111,9 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
              has_sub('trestle') or has_sub('breasting_dolphin')):
         return 'readiness_jetty'
     if has('status_operation', 'status_operasi', 'status_item') and \
-            (has('spm', 'single_point_mooring', 'mooring', 'nama_spm') or has_sub('spm')):
+            (has('spm', 'single_point_mooring', 'nama_spm') or has_sub('spm') or
+             has_sub('buoy') or has_sub('hawser') or has_sub('swivel') or
+             has_sub('floating_hose') or has_sub('plem') or has_sub('subsea')):
         return 'readiness_spm'
 
     # Workplan types — program_kerja dengan target/progres
