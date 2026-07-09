@@ -2566,23 +2566,36 @@ def _reliability_engineering_signals(connection, node_id: str, item: dict, prope
     try:
         connection.execute("SET LOCAL statement_timeout = '12s'")
 
-        # (a) Reliability observation: MTBF/MTTR/status/running_hours (pola equipment_action_queue)
-        rel = one(connection, f"""
-            SELECT
-                count(*) observations,
-                avg({num("o.properties_json ->> 'mtbf'")}) avg_mtbf,
-                avg({num("o.properties_json ->> 'mttr'")}) avg_mttr,
-                max({num("o.properties_json ->> 'running_hours'")}) max_running_hours,
-                sum(CASE WHEN lower(coalesce((o.properties_json ->> 'status'), '')) <> ''
-                          AND lower(coalesce((o.properties_json ->> 'status'), '')) NOT IN ('running','run','operation','operating','normal','standby')
-                         THEN 1 ELSE 0 END) abnormal_status_count,
-                mode() WITHIN GROUP (ORDER BY nullif((o.properties_json ->> 'hasil'), '')) function_status
-            FROM kg_relationship r
-            JOIN kg_node o ON o.node_id=r.target_node_id AND o.node_type='reliability_observation'
-            WHERE r.source_node_id=%s
-              AND r.relationship_type='EQUIPMENT_HAS_RELIABILITY_OBSERVATION'
-              AND NOT r.is_candidate
-        """, [node_id]) or {}
+        # (a) Reliability observation: MTBF/MTTR/status/running_hours
+        # Utama: confirmed edges. Fallback: candidate edges (tag-match) jika confirmed tidak punya MTBF/MTTR.
+        # Banyak equipment (tank, dll) tidak punya confirmed edge ke reliability_observation
+        # tapi nilai MTBF/MTTR-nya nyata ada di node yang di-tag-match.
+        def _rel_obs_query(include_candidates: bool) -> dict:
+            cand_filter = "" if include_candidates else "AND NOT r.is_candidate"
+            return one(connection, f"""
+                SELECT
+                    count(*) observations,
+                    avg({num("o.properties_json ->> 'mtbf'")}) avg_mtbf,
+                    avg({num("o.properties_json ->> 'mttr'")}) avg_mttr,
+                    max({num("o.properties_json ->> 'running_hours'")}) max_running_hours,
+                    sum(CASE WHEN lower(coalesce((o.properties_json ->> 'status'), '')) <> ''
+                              AND lower(coalesce((o.properties_json ->> 'status'), '')) NOT IN ('running','run','operation','operating','normal','standby')
+                             THEN 1 ELSE 0 END) abnormal_status_count,
+                    mode() WITHIN GROUP (ORDER BY nullif((o.properties_json ->> 'hasil'), '')) function_status,
+                    bool_or(r.is_candidate) used_candidates
+                FROM kg_relationship r
+                JOIN kg_node o ON o.node_id=r.target_node_id AND o.node_type='reliability_observation'
+                WHERE r.source_node_id=%s
+                  AND r.relationship_type='EQUIPMENT_HAS_RELIABILITY_OBSERVATION'
+                  {cand_filter}
+            """, [node_id]) or {}
+
+        rel = _rel_obs_query(include_candidates=False)
+        # Fallback ke candidate jika confirmed tidak punya MTBF/MTTR
+        if not rel.get('avg_mtbf') and not rel.get('avg_mttr'):
+            rel_cand = _rel_obs_query(include_candidates=True)
+            if rel_cand.get('avg_mtbf') or rel_cand.get('avg_mttr'):
+                rel = rel_cand
 
         # issue count (bad-actor / FRACAS)
         iss = one(connection, """
@@ -3726,8 +3739,14 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
 
         signal_lines = []
         for k, v in (signals or {}).items():
-            if v not in (None, '', 0, '0'):
+            if v not in (None, '', 0, '0', 0.0):
                 signal_lines.append(f"  {k}: {v}")
+        # Pastikan MTBF/MTTR selalu muncul dengan label jelas, bukan hilang
+        for mtkey, label in [('avg_mtbf', 'MTBF rata-rata (jam)'), ('avg_mttr', 'MTTR rata-rata (jam)'), ('max_running_hours', 'Running hours maks')]:
+            if signals and signals.get(mtkey) not in (None, 0, 0.0):
+                pass  # sudah masuk di loop atas
+            elif signals and signals.get(mtkey) is None:
+                signal_lines.append(f"  {label}: Belum tercatat di reliability observation yang terhubung")
 
         prop_lines = [f"  {k}: {v}" for k, v in props.items() if v not in (None, '', 'None', '0')][:30]
 
