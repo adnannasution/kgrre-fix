@@ -2986,7 +2986,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
 
   const allRus = Array.from(new Set(data.flatMap(d => d.rows.map(r => r.ru)))).sort()
 
-  const COVERAGE_EXCLUDE = new Set(['maintenance_notification'])
+  const COVERAGE_EXCLUDE = new Set(['notification', 'work_order', 'maintenance_notification'])
   const aggregated = data
     .filter(d => !COVERAGE_EXCLUDE.has(d.domain))
     .map(d => {
