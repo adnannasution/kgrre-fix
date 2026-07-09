@@ -2674,7 +2674,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
         <div className="hero-stat">
           <span className="hero-stat-num">{datasets.length}</span>
           <span className="eyebrow">dataset tersedia</span>
-          {datasets.length > 0 && (
+          {false && datasets.length > 0 && (
             <button
               className="reset-all-btn"
               onClick={() => void resetAll()}
