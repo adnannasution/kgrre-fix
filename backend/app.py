@@ -564,11 +564,13 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 """)
 
             job.progress = 95
+            node_count = fetch_tuple(connection, "SELECT count(*) FROM kg_node")[0]
             edge_count = fetch_tuple(connection,
                 "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")[0]
 
         from .config import update_dataset_counts
-        update_dataset_counts(dataset_id, row["node_count"], edge_count, row["issue_count"], row["workbooks"])
+        update_dataset_counts(dataset_id, node_count, edge_count,
+                              row.get("issue_count", 0), row.get("workbooks") or [])
         job.status = "completed"
         job.phase = "Selesai"
         job.progress = 100
