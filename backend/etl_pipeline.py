@@ -127,7 +127,7 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     # Readiness — status_operation sangat khas dan tidak ada di domain lain
     if has('status_operation', 'status_operasi'):
         return 'readiness'
-    if has('status_item', 'rtl') and has('period_date', 'month_update'):
+    if has('status_item', 'rtl') and has('period_date', 'month_update') and not has('rtl_action_plan', 'status_rtl'):
         return 'readiness'
 
     # OA Availability
