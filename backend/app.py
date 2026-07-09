@@ -1356,10 +1356,56 @@ def ru_summary(dataset_id: str):
 def schema(dataset_id: str):
     connection = db_for(dataset_id)
     try:
+        graph_schema = _analysis_rows(connection, "graph_schema", 2000)
+        ontology_depth = _analysis_rows(connection, "ontology_depth", 2000)
+        deepest_paths = _analysis_rows(connection, "deepest_paths", 2000)
+
+        # Fallback: hitung langsung dari graph jika ETL tidak menyertakan file summary
+        if not graph_schema:
+            graph_schema = rows(connection, """
+                SELECT
+                    r.relationship_type,
+                    s.node_type AS source_node_type,
+                    t.node_type AS target_node_type,
+                    count(*) AS relationship_count
+                FROM kg_relationship r
+                JOIN kg_node s ON s.node_id = r.source_node_id
+                JOIN kg_node t ON t.node_id = r.target_node_id
+                GROUP BY r.relationship_type, s.node_type, t.node_type
+                ORDER BY relationship_count DESC
+                LIMIT 500
+            """)
+
+        if not ontology_depth:
+            # Bangun ontology_depth dari graph_schema: satu baris per relationship
+            ontology_depth = [
+                {
+                    "relationship_path": row.get("relationship_type", ""),
+                    "node_path": f"{row.get('source_node_type','')} → {row.get('target_node_type','')}",
+                    "depth": 1,
+                    "relationship_count": row.get("relationship_count", 0),
+                }
+                for row in graph_schema
+            ]
+
+        if not deepest_paths:
+            # Bangun deepest_paths dari graph_schema: tampilkan top relationship terbanyak
+            deepest_paths = [
+                {
+                    "path_id": f"live-{i}",
+                    "path_pattern": f"{row.get('source_node_type','')} → {row.get('target_node_type','')}",
+                    "path_depth": 1,
+                    "label_path": f"{row.get('source_node_type','')} → {row.get('target_node_type','')}",
+                    "analysis_scope": f"{row.get('relationship_count', 0)} relasi ({row.get('relationship_type','')})",
+                    "relationship_type": row.get("relationship_type", ""),
+                }
+                for i, row in enumerate(graph_schema[:50])
+            ]
+
         return {
-            "graph_schema": _analysis_rows(connection, "graph_schema", 2000),
-            "ontology_depth": _analysis_rows(connection, "ontology_depth", 2000),
-            "deepest_paths": _analysis_rows(connection, "deepest_paths", 2000),
+            "graph_schema": graph_schema,
+            "ontology_depth": ontology_depth,
+            "deepest_paths": deepest_paths,
         }
     finally:
         connection.close()
