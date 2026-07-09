@@ -2051,6 +2051,8 @@ function reliabilityEngineeringLines(insight: GraphInsight): string[] {
   }
   // (i) power & steam
   if (re.ps_count) lines.push(`- Monitoring power & steam: ${format(re.ps_count)} rekaman terkait — pertimbangkan sebagai konteks utilitas dan ketersediaan energi pendukung.`)
+  // (i2) metering
+  if (re.meter_count) lines.push(`- Metering/sertifikasi alat ukur: ${format(re.meter_count)} alat ukur terkait${re.meter_not_normal ? `, ${format(re.meter_not_normal)} berstatus tidak normal` : ', semua Operasi Normal'}${re.meter_nearest_expired ? `; sertifikat terdekat kedaluwarsa: ${re.meter_nearest_expired}` : ''} — pertimbangkan kepatuhan kalibrasi dan legalitas operasi.`)
   // (j) readiness infrastruktur
   if (re.readiness_infra && Object.keys(re.readiness_infra).length) {
     const infraLabels: Record<string, string> = { readiness_jetty: 'Jetty', readiness_spm: 'SPM', readiness_tank: 'Tangki' }
@@ -2916,6 +2918,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   readiness_tank:          'Readiness Tank',
   bad_actor:               'Bad Actor',
   critical_equipment:      'Critical Equipment',
+  metering:                'Metering',
   monitoring_operasi:      'Monitoring Operasi',
   rotor:                   'Rotor',
   atg:                     'ATG',
@@ -2999,7 +3002,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
 
   const allRus = Array.from(new Set(data.flatMap(d => d.rows.map(r => r.ru)))).sort()
 
-  const COVERAGE_EXCLUDE = new Set(['notification', 'work_order', 'maintenance_notification', 'readiness_record', 'metering'])
+  const COVERAGE_EXCLUDE = new Set(['notification', 'work_order', 'maintenance_notification', 'readiness_record'])
   const aggregated = data
     .filter(d => !COVERAGE_EXCLUDE.has(d.domain))
     .map(d => {

@@ -90,6 +90,10 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('kdn') and has('nominal') and has('persentase'):
         return 'tkdn'
 
+    # Metering — status_metering + cert_no_metering sangat spesifik
+    if has('status_metering') and has('cert_no_metering', 'date_expired_metering'):
+        return 'metering'
+
     # Zero Clamp — tag_no_ln atau type_damage + type_perbaikan
     if has('tag_no_ln') or (has('type_damage') and has('type_perbaikan', 'tanggal_dipasang')):
         return 'zero_clamp'
@@ -2896,6 +2900,88 @@ def _build_critical_equipment_nodes(con: duckdb.DuckDBPyConnection, views: list[
     """)
 
 
+def _build_metering_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit','ru','kilang', default='NULL')})"
+    # tag_number = tag alat ukur; equipment = kode equipment yang dipasangi alat ukur
+    tag_expr  = _cs(c, 'tag_number', 'tag_no', 'equipment')
+    eq_expr   = _cs(c, 'equipment', 'tag_number', 'tag_no')
+    con.execute(f"""
+        CREATE TABLE metering_stage AS
+        SELECT
+            {tag_expr} AS tag_raw,
+            {eq_expr} AS equipment_raw,
+            {_cs(c, 'status_metering','status')} AS status_metering,
+            {_cs(c, 'cert_no_metering','cert_no','no_sertifikat')} AS cert_no,
+            {_cs(c, 'date_expired_metering','date_expired','expired_date', cast=True)} AS date_expired,
+            {_cs(c, 'remark','keterangan')} AS remark,
+            {_cs(c, 'rtl')} AS rtl,
+            {_cs(c, 'action_plan_category','action_plan')} AS action_plan,
+            {_cs(c, 'external_resource')} AS external_resource,
+            {_cs(c, 'no_irkap')} AS no_irkap,
+            {_cs(c, 'status_rtl')} AS status_rtl,
+            {_cs(c, 'month_update', cast=True)} AS month_update,
+            {_cs(c, 'periode','period', cast=True)} AS periode,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({tag_expr}), '') IS NOT NULL
+    """)
+    con.execute("""
+        ALTER TABLE metering_stage ADD COLUMN meter_id VARCHAR;
+        UPDATE metering_stage
+        SET meter_id = 'node_metering_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || tag_raw || '|' || source_record_id);
+        ALTER TABLE metering_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE metering_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE metering_stage.refinery_unit = e.refinery_unit
+          AND norm_code(metering_stage.equipment_raw) = norm_code(e.equipment_code_clean)
+          AND nullif(trim(metering_stage.equipment_raw),'') IS NOT NULL;
+    """)
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT meter_id, 'metering', tag_raw,
+               coalesce(nullif(tag_raw,''), 'Metering'), 'metering',
+               json_object('refinery_unit', refinery_unit, 'tag_raw', tag_raw,
+                   'equipment_raw', equipment_raw,
+                   'status_metering', status_metering, 'cert_no', cert_no,
+                   'date_expired', date_expired, 'remark', remark, 'rtl', rtl,
+                   'action_plan', action_plan, 'external_resource', external_resource,
+                   'no_irkap', no_irkap, 'status_rtl', status_rtl,
+                   'month_update', month_update, 'periode', periode),
+               source_file, source_sheet, source_row, source_record_id
+        FROM metering_stage WHERE meter_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, meter_id, 'EQUIPMENT_HAS_METERING',
+               'metering', 1.0, 'equipment_exact', false,
+               json_object('equipment_raw', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM metering_stage WHERE equipment_id IS NOT NULL AND meter_id IS NOT NULL
+    """)
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT DISTINCT r.refinery_unit_id, s.meter_id, 'REFINERY_UNIT_HAS_METERING',
+               'metering', 1.0, 'refinery_unit_direct', false,
+               json_object('refinery_unit', s.refinery_unit),
+               s.source_file, s.source_sheet, s.source_row, s.source_record_id
+        FROM metering_stage s
+        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
+        WHERE s.meter_id IS NOT NULL
+    """)
+
+
 # ---------------------------------------------------------------------------
 # Output writer
 # ---------------------------------------------------------------------------
@@ -3018,6 +3104,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
             "work_order": [], "notification": [], "rotor": [],
             "spm_workplan": [], "tank_workplan": [], "jetty_workplan": [],
             "readiness_tank": [], "readiness_jetty": [], "readiness_spm": [],
+            "metering": [],
         }
 
         job.phase = "Membaca sheet Excel"
@@ -3171,6 +3258,8 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
 
         job.progress = 89
         job.phase = "Membangun node Readiness SPM"
+        _safe("Metering", _build_metering_nodes, con, domain_views["metering"])
+
         _safe("Readiness SPM", _build_readiness_subtype_nodes, con, domain_views["readiness_spm"],
               "readiness_spm", "SPM", "readiness_spm_stage", [])
 
