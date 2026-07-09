@@ -308,7 +308,7 @@ def _load_excel_to_duckdb(con: duckdb.DuckDBPyConnection, path: Path) -> list[tu
         seen: dict[str, int] = {}
         clean_headers: list[str] = []
         for h in raw_headers:
-            h_clean = re.sub(r'[^a-zA-Z0-9_]', '_', h).lower() or "col"
+            h_clean = re.sub(r'[^a-zA-Z0-9_]', '_', h).lower().strip('_') or "col"
             if h_clean in seen:
                 seen[h_clean] += 1
                 h_clean = f"{h_clean}_{seen[h_clean]}"
@@ -443,10 +443,15 @@ CREATE TABLE unmatched_raw (
 # ---------------------------------------------------------------------------
 
 def _union_cols(con: duckdb.DuckDBPyConnection, views: list[str]) -> set[str]:
-    """Kumpulkan semua nama kolom yang ada di sekumpulan views."""
+    """Kumpulkan semua nama kolom yang ada di sekumpulan views.
+
+    Nama kolom di DuckDB sudah dinormalisasi saat load (re.sub non-alphanum → '_', lowercase),
+    tapi bisa punya trailing underscore (mis. "Functional Loc." → "functional_loc_").
+    Strip trailing underscore agar cocok dengan nama yang dicari oleh _cs.
+    """
     cols: set[str] = set()
     for v in views:
-        cols |= {r[0].lower() for r in con.execute(f'DESCRIBE {v}').fetchall()}
+        cols |= {r[0].lower().strip('_') for r in con.execute(f'DESCRIBE {v}').fetchall()}
     return cols
 
 
