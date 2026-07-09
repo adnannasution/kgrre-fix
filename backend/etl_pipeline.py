@@ -59,7 +59,9 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
         return 'icu_issue'
 
     # ATG — tag_no_tangki/tag_no_atg/status_atg sangat spesifik
-    if has('tag_no_tangki', 'tag_no_atg') or has('status_atg', 'status_interkoneksi_atg'):
+    # Pengecualian: tank readiness juga punya status_atg (sebagai salah satu item cek)
+    if (has('tag_no_tangki', 'tag_no_atg') or has('status_atg', 'status_interkoneksi_atg')) \
+            and not has('status_operational_tangki'):
         return 'atg'
     if has('atg_eksisting') or (has_sub('atg') and has('program_2024', 'prokja')):
         return 'atg_program'
