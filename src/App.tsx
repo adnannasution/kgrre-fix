@@ -2038,6 +2038,27 @@ function reliabilityEngineeringLines(insight: GraphInsight): string[] {
   }
   // (d) inspeksi (tag-match exact-boundary, indikatif)
   if (re.inspection_match_count) lines.push(`- Temuan inspeksi pada tag yang sama: ${format(re.inspection_match_count)} — indikasi, verifikasi ke equipment${re.inspection_findings?.length ? `; contoh hasil: ${re.inspection_findings.slice(0, 3).join('; ')}` : ''}.`)
+  // (e) ICU issue
+  if (re.icu_count) lines.push(`- ICU Issue (integrity/condition): ${format(re.icu_count)} total${re.icu_open_count ? `, ${format(re.icu_open_count)} masih open` : ', semua closed'} — jadikan dasar evaluasi condition monitoring dan integritas aset.`)
+  // (f) critical equipment
+  if (re.ce_count) lines.push(`- Equipment ini terdaftar sebagai Critical Equipment${re.ce_class ? ` (kelas: ${re.ce_class})` : ''} — gunakan sebagai bobot prioritas dalam setiap rekomendasi tindakan.`)
+  // (g) zero clamp
+  if (re.zc_count) lines.push(`- Zero Clamp terpasang: ${format(re.zc_count)} total${re.zc_active_count ? `, ${format(re.zc_active_count)} masih aktif/belum dilepas` : ', semua sudah dilepas'}${re.zc_dominant_damage ? `; jenis kerusakan dominan: ${re.zc_dominant_damage}` : ''} — sinyal adanya kerusakan mekanis aktif yang belum sepenuhnya diselesaikan.`)
+  // (h) pipeline inspection
+  if (re.pi_count) {
+    const eolNote = re.pi_near_eol ? ` — PERINGATAN: ${format(re.pi_near_eol)} segmen remaining life < 5 tahun` : ''
+    lines.push(`- Pipeline inspection: ${format(re.pi_count)} rekaman${present(re.pi_min_rem_life) ? `; remaining life minimum: ${re.pi_min_rem_life} tahun` : ''}${eolNote}.`)
+  }
+  // (i) power & steam
+  if (re.ps_count) lines.push(`- Monitoring power & steam: ${format(re.ps_count)} rekaman terkait — pertimbangkan sebagai konteks utilitas dan ketersediaan energi pendukung.`)
+  // (j) readiness infrastruktur
+  if (re.readiness_infra && Object.keys(re.readiness_infra).length) {
+    const infraLabels: Record<string, string> = { readiness_jetty: 'Jetty', readiness_spm: 'SPM', readiness_tank: 'Tangki' }
+    for (const [key, val] of Object.entries(re.readiness_infra as Record<string, { count: number; not_normal: number }>)) {
+      const label = infraLabels[key] ?? key
+      lines.push(`- Readiness ${label}: ${format(val.count)} rekaman${val.not_normal ? `, ${format(val.not_normal)} berstatus tidak normal` : ', semua dalam kondisi normal'}.`)
+    }
+  }
   // (c) business case RKAP (pisah pasti vs kemungkinan)
   if (re.rkap_program_count) {
     const exact = re.rkap_exact_count ?? 0
