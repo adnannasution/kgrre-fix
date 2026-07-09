@@ -1839,6 +1839,16 @@ _EQ_COL_OVERRIDE: dict[str, str] = {
     'EQUIPMENT_HAS_ATG':              'tag_tangki',
 }
 
+_ALWAYS_SHOW_DOMAINS: list[tuple[str, str, str]] = [
+    ('readiness_jetty',  'EQUIPMENT_HAS_READINESS_JETTY',  'equipment_raw'),
+    ('readiness_spm',    'EQUIPMENT_HAS_READINESS_SPM',    'equipment_raw'),
+    ('readiness_tank',   'EQUIPMENT_HAS_READINESS_TANK',   'equipment_raw'),
+    ('jetty_workplan',   'EQUIPMENT_HAS_JETTY_WORKPLAN',   'equipment_raw'),
+    ('spm_workplan',     'EQUIPMENT_HAS_SPM_WORKPLAN',     'equipment_raw'),
+    ('tank_workplan',    'EQUIPMENT_HAS_TANK_WORKPLAN',    'equipment_raw'),
+]
+
+
 def _discover_domains(connection) -> list[tuple[str, str, str]]:
     """Auto-discover semua domain non-SAP dari EQUIPMENT_HAS_* relationships.
     Return: list of (node_type, rel_type, eq_col)"""
@@ -1851,11 +1861,21 @@ def _discover_domains(connection) -> list[tuple[str, str, str]]:
         ORDER BY dn.node_type
     """)
     result = []
+    seen: set[str] = set()
     for d in discovered:
         rel_type = d['relationship_type']
         node_type = d['node_type']
         eq_col = _EQ_COL_OVERRIDE.get(rel_type, 'equipment_raw')
         result.append((node_type, rel_type, eq_col))
+        seen.add(node_type)
+    # Tambahkan domain yang selalu ditampilkan jika ada node-nya di dataset
+    existing_types = {r['node_type'] for r in rows(connection, """
+        SELECT DISTINCT node_type FROM kg_node
+        WHERE node_type = ANY(%s)
+    """, [[nt for nt, _, _ in _ALWAYS_SHOW_DOMAINS]])}
+    for node_type, rel_type, eq_col in _ALWAYS_SHOW_DOMAINS:
+        if node_type not in seen and node_type in existing_types:
+            result.append((node_type, rel_type, eq_col))
     return result
 
 
