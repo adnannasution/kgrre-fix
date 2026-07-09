@@ -3270,47 +3270,68 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
+  const [eqQuery, setEqQuery] = useState('')
+  const [eqResults, setEqResults] = useState<GraphNode[]>([])
+  const [eqSearching, setEqSearching] = useState(false)
+  const [pickedEq, setPickedEq] = useState<GraphNode | null>(null)
 
   if (!dataset) return <NoDataset />
 
-  const loadGraph = async (chain: Chain) => {
+  const searchEquipment = async (q: string) => {
+    setEqQuery(q)
+    if (q.length < 2) { setEqResults([]); return }
+    setEqSearching(true)
+    try {
+      const res = await api.search(dataset.id, q, 'equipment', '', 10)
+      setEqResults(res)
+    } finally {
+      setEqSearching(false)
+    }
+  }
+
+  // Fetch targeted: untuk tiap step dengan relType, ambil neighbors dari rootId
+  // filtered hanya ke node_type step tersebut (via hasil neighbors)
+  const loadGraph = async (chain: Chain, rootNode: GraphNode) => {
     setLoading(true)
     setError('')
     setSelectedNode(null)
     try {
-      // Selalu mulai dari step pertama (biasanya equipment / root node jalur)
-      const rootStep = chain.steps[0]
-      const depth = Math.min(chain.steps.length + 1, 5)
-
-      const roots = await api.search(dataset.id, '', rootStep.nodeType, '', 10)
-      if (roots.length === 0) {
-        setGraph(emptyGraph)
-        setError(`Tidak ada node bertipe "${rootStep.nodeType}" ditemukan. Pastikan file sudah diupload dan relasi sudah direbuild.`)
-        return
-      }
-
       const allNodes = new Map<string, GraphNode>()
       const allEdges = new Map<string, GraphEdge>()
 
-      for (const root of roots.slice(0, 5)) {
-        const slice = await api.neighbors(dataset.id, root.id, {
-          depth,
-          includeCandidates: false,
-          minConfidence: 0,
-          limit: 300,
-        })
-        slice.nodes.forEach(n => allNodes.set(n.id, n))
-        slice.edges.forEach(e => allEdges.set(e.id, e))
-        if (allNodes.size >= 50) break
+      // Selalu sertakan root node
+      allNodes.set(rootNode.id, rootNode)
+
+      // Fetch per step secara targeted: ambil neighbors dengan depth=1 dari tiap node yang sudah ada
+      // per type yang diharapkan — ini memastikan setiap domain type terwakili
+      const frontier = [rootNode.id]
+      for (const step of chain.steps.slice(1)) {
+        if (!step.relType) continue
+        const nextFrontier: string[] = []
+        for (const nodeId of frontier.slice(0, 3)) {
+          const slice = await api.neighbors(dataset.id, nodeId, {
+            depth: 1,
+            includeCandidates: false,
+            minConfidence: 0,
+            limit: 50,
+          })
+          const stepNodes = slice.nodes.filter(n => n.kind === step.nodeType)
+          const stepEdges = slice.edges.filter(e => e.type === step.relType)
+          slice.nodes.forEach(n => { if (n.kind === step.nodeType) allNodes.set(n.id, n) })
+          stepEdges.forEach(e => allEdges.set(e.id, e))
+          stepNodes.forEach(n => nextFrontier.push(n.id))
+        }
+        // Tambahkan juga root node ke frontier agar step berikutnya bisa ke bawah
+        frontier.push(...nextFrontier)
       }
 
-      if (allNodes.size === 0) {
+      if (allNodes.size <= 1) {
         setGraph(emptyGraph)
-        setError('Tidak ada relasi ditemukan untuk jalur ini.')
+        setError('Tidak ada relasi ditemukan untuk equipment ini di jalur ini. Pastikan relasi sudah direbuild.')
         return
       }
 
-      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: allNodes.size >= 300 })
+      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: false })
     } catch (e) {
       setError(message(e))
     } finally {
@@ -3321,7 +3342,14 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
   const handleChainClick = (chain: Chain) => {
     setSelectedChain(chain)
     setSelectedStep(chain.steps[0])
-    void loadGraph(chain)
+    if (pickedEq) void loadGraph(chain, pickedEq)
+  }
+
+  const handlePickEq = (eq: GraphNode) => {
+    setPickedEq(eq)
+    setEqQuery(eq.label)
+    setEqResults([])
+    if (selectedChain) void loadGraph(selectedChain, eq)
   }
 
   return (
@@ -3360,7 +3388,6 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
             <div className="chain-graph-header">
               <div>
                 <strong>{selectedChain.title}</strong>
-                <span className="chain-graph-subtitle"> · Semua node dalam satu graph</span>
               </div>
               <div className="chain-steps-nav">
                 {selectedChain.steps.map((step, i) => (
@@ -3373,13 +3400,40 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
                 ))}
               </div>
             </div>
+
+            {/* Search equipment */}
+            <div className="chain-eq-search">
+              <div style={{ position: 'relative' }}>
+                <input
+                  className="search-input"
+                  placeholder="Cari equipment (min. 2 karakter)…"
+                  value={eqQuery}
+                  onChange={e => void searchEquipment(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+                {eqSearching && <span style={{ position: 'absolute', right: 8, top: 8, fontSize: 12, opacity: 0.5 }}>…</span>}
+                {eqResults.length > 0 && (
+                  <div className="search-dropdown">
+                    {eqResults.map(eq => (
+                      <div key={eq.id} className="search-dropdown-item" onClick={() => handlePickEq(eq)}>
+                        <strong>{eq.label}</strong>
+                        <span style={{ marginLeft: 8, opacity: 0.5, fontSize: 12 }}>{eq.subtitle ?? eq.id}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {pickedEq && <div className="chain-picked-eq">Equipment: <strong>{pickedEq.label}</strong></div>}
+              {!pickedEq && <div style={{ fontSize: 12, opacity: 0.5, marginTop: 4 }}>Pilih equipment untuk memuat graph jalur ini</div>}
+            </div>
+
             {loading && <div className="chain-loading">Memuat graph…</div>}
             {error && <div className="chain-error">{error}</div>}
             {!loading && !error && graph.nodes.length > 0 && (
               <div className="chain-graph-wrap">
                 <GraphView
                   graph={graph}
-                  rootId={graph.nodes[0]?.id ?? ''}
+                  rootId={pickedEq?.id ?? graph.nodes[0]?.id ?? ''}
                   selectedId={selectedNode?.id}
                   onSelect={setSelectedNode}
                   onSelectEdge={() => {}}
@@ -3396,8 +3450,8 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
                 )}
               </div>
             )}
-            {!loading && !error && graph.nodes.length === 0 && (
-              <div className="chain-empty"><p>Tidak ada data untuk node ini. Coba upload dan rebuild relasi.</p></div>
+            {!loading && !error && graph.nodes.length === 0 && pickedEq && (
+              <div className="chain-empty"><p>Tidak ada relasi ditemukan untuk equipment ini. Coba rebuild relasi terlebih dahulu.</p></div>
             )}
           </>
         )}
