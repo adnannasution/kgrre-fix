@@ -3422,6 +3422,8 @@ function renderMarkdown(text: string) {
   return elements
 }
 
+type SavedAnalysis = { id: number; scope: string; focus: string; ru: string; equipment_id: string; title: string; created_at: string }
+
 function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
   const [scope, setScope] = useState<'dataset' | 'ru' | 'equipment'>('dataset')
   const [selectedRu, setSelectedRu] = useState('')
@@ -3433,7 +3435,18 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
   const [generating, setGenerating] = useState(false)
   const [result, setResult] = useState('')
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [savedOk, setSavedOk] = useState(false)
+  const [history, setHistory] = useState<SavedAnalysis[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+
+  const loadHistory = () => {
+    if (!dataset) return
+    api.listSavedAnalyses(dataset.id).then(setHistory).catch(() => {})
+  }
+
+  useEffect(() => { loadHistory() }, [dataset])
 
   useEffect(() => {
     if (!dataset) return
@@ -3481,6 +3494,42 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
   }
 
   const stop = () => { abortRef.current?.abort(); setGenerating(false) }
+
+  const saveResult = async () => {
+    if (!dataset || !result) return
+    setSaving(true)
+    const focusLabel = FOCUS_OPTIONS.find(f => f.value === focus)?.label ?? focus
+    const scopeLabel = scope === 'dataset' ? 'Dataset' : scope === 'ru' ? selectedRu : (selectedEquipment?.label ?? '')
+    const title = `${scopeLabel} · ${focusLabel}`
+    try {
+      await api.saveAnalysis(dataset.id, { scope, focus, ru: selectedRu, equipment_id: selectedEquipment?.id ?? '', title, content: result })
+      setSavedOk(true)
+      setTimeout(() => setSavedOk(false), 2500)
+      loadHistory()
+    } catch { /* ignore */ } finally {
+      setSaving(false)
+    }
+  }
+
+  const loadSaved = async (id: number) => {
+    if (!dataset) return
+    try {
+      const saved = await api.getSavedAnalysis(dataset.id, id)
+      setResult(saved.content)
+      setScope(saved.scope as 'dataset' | 'ru' | 'equipment')
+      setFocus(saved.focus)
+      setSelectedRu(saved.ru ?? '')
+      setHistoryOpen(false)
+    } catch { /* ignore */ }
+  }
+
+  const deleteSaved = async (id: number) => {
+    if (!dataset) return
+    try {
+      await api.deleteSavedAnalysis(dataset.id, id)
+      setHistory(h => h.filter(a => a.id !== id))
+    } catch { /* ignore */ }
+  }
 
   if (!dataset) return <NoDataset />
 
@@ -3577,7 +3626,27 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
                 <SparkleIcon style={{ width: 14, height: 14 }} /> Generate Analisis
               </button>
           }
+          <button className="secondary" onClick={() => { setHistoryOpen(o => !o); loadHistory() }} style={{ position: 'relative' }}>
+            Riwayat {history.length > 0 && <b style={{ marginLeft: 4 }}>{history.length}</b>}
+          </button>
         </div>
+
+        {historyOpen && (
+          <div className="analisis-history">
+            {history.length === 0
+              ? <p className="analisis-history-empty">Belum ada analisis tersimpan.</p>
+              : history.map(a => (
+                <div key={a.id} className="analisis-history-item">
+                  <button className="analisis-history-load" onClick={() => void loadSaved(a.id)}>
+                    <span className="analisis-history-title">{a.title}</span>
+                    <span className="analisis-history-date">{new Date(a.created_at).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })}</span>
+                  </button>
+                  <button className="analisis-history-del" title="Hapus" onClick={() => void deleteSaved(a.id)}>×</button>
+                </div>
+              ))
+            }
+          </div>
+        )}
 
         {error && <div className="analisis-error">{error}</div>}
       </div>
@@ -3599,9 +3668,12 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
                 {' · '}{FOCUS_OPTIONS.find(f => f.value === focus)?.label}
               </span>
               {result && !generating && (
-                <button className="secondary small" onClick={() => {
-                  navigator.clipboard.writeText(result)
-                }}>Salin Teks</button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="secondary small" onClick={() => void saveResult()} disabled={saving}>
+                    {savedOk ? '✓ Tersimpan' : saving ? 'Menyimpan…' : 'Simpan'}
+                  </button>
+                  <button className="secondary small" onClick={() => navigator.clipboard.writeText(result)}>Salin Teks</button>
+                </div>
               )}
             </div>
             <div className="analisis-result-body">
