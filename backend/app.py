@@ -1685,10 +1685,32 @@ def _compute_reliability_insight(dataset_id: str):
             reverse=True,
         )[:25]
         avg_link = sum((_float(item.get("equipment_link_percentage")) or 0) for item in coverage) / len(coverage) if coverage else 0
+
+        # Hitung langsung dari graph agar tidak bergantung pada file summary ETL
+        _readiness_linked = one(connection, """
+            SELECT count(DISTINCT target_node_id) AS c FROM kg_relationship
+            WHERE relationship_type IN ('EQUIPMENT_HAS_READINESS_RECORD','REFINERY_UNIT_HAS_READINESS_RECORD')
+              AND NOT is_candidate
+        """) or {}
+        _rkap_linked = one(connection, """
+            SELECT count(DISTINCT target_node_id) AS c FROM kg_relationship
+            WHERE relationship_type='EQUIPMENT_HAS_RKAP_PROGRAM'
+        """) or {}
+        # Data confidence: pakai avg_link dari coverage ETL jika ada, fallback hitung dari graph
+        if not avg_link:
+            _eq_total = one(connection, "SELECT count(*) AS c FROM kg_node WHERE node_type='equipment'") or {}
+            _eq_linked = one(connection, """
+                SELECT count(DISTINCT source_node_id) AS c FROM kg_relationship
+                WHERE NOT is_candidate
+            """) or {}
+            _t = int(_eq_total.get('c') or 0)
+            _l = int(_eq_linked.get('c') or 0)
+            avg_link = round(_l * 100 / _t, 2) if _t else 0
+
         cross_domain_kpis = {
             "reliability_risk_equipment": len(equipment_action_queue),
-            "readiness_linked_records": sum(int(_float(item.get("readiness_records")) or 0) for item in ru_summary),
-            "rkap_linked_programs": sum(int(_float(item.get("rkap_programs")) or 0) for item in ru_summary),
+            "readiness_linked_records": int(_readiness_linked.get('c') or 0),
+            "rkap_linked_programs": int(_rkap_linked.get('c') or 0),
             "candidate_relationships": sum(int(_float(item.get("candidate_count")) or 0) for item in candidate_relationships),
             "data_confidence": round(avg_link, 2),
         }
