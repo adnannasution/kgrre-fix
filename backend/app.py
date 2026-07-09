@@ -415,6 +415,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
                 ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
                 ('power_steam',             'EQUIPMENT_HAS_POWER_STEAM',             'equipment_raw'),
+                ('metering',               'EQUIPMENT_HAS_METERING',               'equipment_raw'),
             ]:
                 connection.execute(f"""
                     INSERT INTO kg_relationship
@@ -1857,6 +1858,7 @@ _ALWAYS_SHOW_DOMAINS: list[tuple[str, str, str]] = [
     ('spm_workplan',     'EQUIPMENT_HAS_SPM_WORKPLAN',     'equipment_raw'),
     ('tank_workplan',    'EQUIPMENT_HAS_TANK_WORKPLAN',    'equipment_raw'),
     ('zero_clamp',       'EQUIPMENT_HAS_ZERO_CLAMP',       'equipment_raw'),
+    ('metering',         'EQUIPMENT_HAS_METERING',         'equipment_raw'),
 ]
 
 
@@ -2846,6 +2848,16 @@ def _reliability_engineering_signals(connection, node_id: str, item: dict, prope
             WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_POWER_STEAM' AND NOT r.is_candidate
         """, [node_id]) or {}
 
+        # (i2) Metering: sertifikasi alat ukur (expired = risiko kepatuhan)
+        meter = one(connection, """
+            SELECT count(*) meter_count,
+                   sum(CASE WHEN lower(coalesce(n.properties_json->>'status_metering','')) NOT IN ('operasi normal','normal','valid','ok') THEN 1 ELSE 0 END) meter_not_normal,
+                   min(nullif(n.properties_json->>'date_expired','')) AS nearest_expired
+            FROM kg_relationship r
+            JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='metering'
+            WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_METERING' AND NOT r.is_candidate
+        """, [node_id]) or {}
+
         # (j) Readiness infrastruktur (Jetty/SPM/Tangki): langsung via edge
         readiness_infra = {}
         for ri_type, ri_rel in [
@@ -2911,6 +2923,10 @@ def _reliability_engineering_signals(connection, node_id: str, item: dict, prope
             "pi_near_eol": int(pi.get("pi_near_eol") or 0),
             # (i) power & steam
             "ps_count": int(ps.get("ps_count") or 0),
+            # (i2) metering
+            "meter_count": int(meter.get("meter_count") or 0),
+            "meter_not_normal": int(meter.get("meter_not_normal") or 0),
+            "meter_nearest_expired": meter.get("nearest_expired") or None,
             # (j) readiness infrastruktur (jetty/spm/tank)
             "readiness_infra": readiness_infra or None,
             # (k) kritikalitas + keyakinan

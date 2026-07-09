@@ -219,6 +219,10 @@ export interface ReliabilityEngineeringSignals {
   pi_near_eol?: number
   // (i) power & steam
   ps_count?: number
+  // (i2) metering
+  meter_count?: number
+  meter_not_normal?: number
+  meter_nearest_expired?: string | null
   // (j) readiness infrastruktur (jetty/spm/tank)
   readiness_infra?: Record<string, { count: number; not_normal: number }> | null
   // (k) kritikalitas + keyakinan
