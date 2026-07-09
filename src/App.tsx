@@ -3273,21 +3273,19 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
 
   if (!dataset) return <NoDataset />
 
-  const loadGraph = async (chain: Chain, step: ChainStep) => {
+  const loadGraph = async (chain: Chain) => {
     setLoading(true)
     setError('')
     setSelectedNode(null)
     try {
-      // Mulai dari node type step yang diklik (bukan selalu equipment)
-      const stepIdx = chain.steps.findIndex(s => s.nodeType === step.nodeType)
-      // Depth ke depan (sisa rantai) + ke belakang (konteks sebelumnya)
-      const depthForward = chain.steps.length - stepIdx
-      const depth = Math.min(Math.max(depthForward + 1, 3), 5)
+      // Selalu mulai dari step pertama (biasanya equipment / root node jalur)
+      const rootStep = chain.steps[0]
+      const depth = Math.min(chain.steps.length + 1, 5)
 
-      const roots = await api.search(dataset.id, '', step.nodeType, '', 10)
+      const roots = await api.search(dataset.id, '', rootStep.nodeType, '', 10)
       if (roots.length === 0) {
         setGraph(emptyGraph)
-        setError(`Tidak ada node bertipe "${step.nodeType}" ditemukan. Pastikan file sudah diupload dan relasi sudah direbuild.`)
+        setError(`Tidak ada node bertipe "${rootStep.nodeType}" ditemukan. Pastikan file sudah diupload dan relasi sudah direbuild.`)
         return
       }
 
@@ -3299,20 +3297,20 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
           depth,
           includeCandidates: false,
           minConfidence: 0,
-          limit: 200,
+          limit: 300,
         })
         slice.nodes.forEach(n => allNodes.set(n.id, n))
         slice.edges.forEach(e => allEdges.set(e.id, e))
-        if (allNodes.size >= 30) break
+        if (allNodes.size >= 50) break
       }
 
       if (allNodes.size === 0) {
         setGraph(emptyGraph)
-        setError('Tidak ada relasi ditemukan untuk node ini.')
+        setError('Tidak ada relasi ditemukan untuk jalur ini.')
         return
       }
 
-      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: allNodes.size >= 200 })
+      setGraph({ nodes: [...allNodes.values()], edges: [...allEdges.values()], truncated: allNodes.size >= 300 })
     } catch (e) {
       setError(message(e))
     } finally {
@@ -3320,14 +3318,10 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     }
   }
 
-  const handleStepClick = (chain: Chain, step: ChainStep) => {
-    setSelectedChain(chain)
-    setSelectedStep(step)
-    void loadGraph(chain, step)
-  }
-
   const handleChainClick = (chain: Chain) => {
-    handleStepClick(chain, chain.steps[0])
+    setSelectedChain(chain)
+    setSelectedStep(chain.steps[0])
+    void loadGraph(chain)
   }
 
   return (
@@ -3344,13 +3338,9 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
             <div className="chain-card-desc">{chain.description}</div>
             <div className="chain-steps-row">
               {chain.steps.map((step, i) => (
-                <span key={step.nodeType} className="chain-step-pill" onClick={e => { e.stopPropagation(); handleStepClick(chain, step) }}>
+                <span key={step.nodeType} className="chain-step-pill">
                   {i > 0 && <span className="chain-arrow">→</span>}
-                  <span
-                    className={`chain-pill ${selectedChain?.id === chain.id && selectedStep?.nodeType === step.nodeType ? 'selected' : ''}`}
-                  >
-                    {step.label}
-                  </span>
+                  <span className="chain-pill">{step.label}</span>
                 </span>
               ))}
             </div>
@@ -3370,18 +3360,16 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
             <div className="chain-graph-header">
               <div>
                 <strong>{selectedChain.title}</strong>
-                {selectedStep && <span className="chain-graph-subtitle"> · Node: <em>{selectedStep.label}</em></span>}
+                <span className="chain-graph-subtitle"> · Semua node dalam satu graph</span>
               </div>
               <div className="chain-steps-nav">
-                {selectedChain.steps.map(step => (
-                  <button
-                    key={step.nodeType}
-                    className={`chain-step-btn ${selectedStep?.nodeType === step.nodeType ? 'active' : ''}`}
-                    onClick={() => handleStepClick(selectedChain, step)}
-                    style={{ '--chain-color': selectedChain.color } as React.CSSProperties}
-                  >
-                    {step.label}
-                  </button>
+                {selectedChain.steps.map((step, i) => (
+                  <span key={step.nodeType} className="chain-step-legend">
+                    {i > 0 && <span className="chain-arrow">→</span>}
+                    <span className="chain-pill selected" style={{ '--chain-color': selectedChain.color } as React.CSSProperties}>
+                      {step.label}
+                    </span>
+                  </span>
                 ))}
               </div>
             </div>
