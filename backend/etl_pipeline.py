@@ -155,7 +155,7 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
             'description_of_technical_object', 'criticallity', 'criticality',
             'maintplant', 'maint_plant', 'planning_plant')):
         return 'rkap'
-    if has_sub('rkap') or has_sub('irkap'):
+    if (has_sub('rkap') or has_sub('irkap')) and not has('rtl_action_plan', 'status_rtl'):
         return 'rkap'
     if has('plan_idr', 'actual_idr', 'budget_idr') or (has('plan', 'actual', 'realisasi') and has('program', 'kegiatan')):
         return 'rkap'
