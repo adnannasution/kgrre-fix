@@ -2916,6 +2916,11 @@ const DOMAIN_LABELS: Record<string, string> = {
   plo_permit:              'PLO Permit',
   pipeline_inspection:     'Pipeline Inspection',
   rcps:                    'RCPS',
+  work_order:              'Work Order',
+  notification:            'Notification',
+  jetty_workplan:          'Jetty Workplan',
+  spm_workplan:            'SPM Workplan',
+  tank_workplan:           'Tank Workplan',
 }
 
 function domainLabel(domain: string): string {
@@ -2981,7 +2986,7 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
 
   const allRus = Array.from(new Set(data.flatMap(d => d.rows.map(r => r.ru)))).sort()
 
-  const COVERAGE_EXCLUDE = new Set(['notification', 'work_order', 'maintenance_notification'])
+  const COVERAGE_EXCLUDE = new Set(['maintenance_notification'])
   const aggregated = data
     .filter(d => !COVERAGE_EXCLUDE.has(d.domain))
     .map(d => {
