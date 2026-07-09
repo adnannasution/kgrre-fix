@@ -3403,50 +3403,40 @@ _DINOIKI_URL = "https://ai.dinoiki.com/v1/chat/completions"
 
 @app.post("/api/diagnosis/generate")
 def diagnosis_generate(req: DiagnosisGenerateRequest):
-    import os
-    import urllib.request
+    import os, requests as _req
     api_key = os.environ.get("DINOIKI_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
 
-    payload = json.dumps({
-        "model": "gpt-4o",
-        "messages": [{"role": "user", "content": req.prompt}],
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "stream": True,
-    }).encode()
-
     def _stream():
-        http_req = urllib.request.Request(
-            _DINOIKI_URL,
-            data=payload,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(http_req, timeout=120) as resp:
-                buf = b""
-                while True:
-                    chunk = resp.read(1024)
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while b"\n" in buf:
-                        line, buf = buf.split(b"\n", 1)
-                        line = line.strip()
-                        if not line.startswith(b"data:"):
-                            continue
-                        payload_str = line[5:].strip()
-                        if payload_str == b"[DONE]":
-                            return
-                        try:
-                            obj = json.loads(payload_str)
-                            text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
-                            if text:
-                                yield f"data: {json.dumps({'text': text})}\n\n"
-                        except Exception:
-                            pass
+            resp = _req.post(
+                _DINOIKI_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": "gpt-4o", "messages": [{"role": "user", "content": req.prompt}],
+                      "max_tokens": 4096, "temperature": 0.7, "stream": True},
+                stream=True, timeout=120,
+            )
+            if not resp.ok:
+                yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                payload_str = line[5:].strip()
+                if payload_str == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload_str)
+                    text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                    if text:
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+                except Exception:
+                    pass
         except Exception as exc:
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
         yield "data: [DONE]\n\n"
@@ -3462,47 +3452,40 @@ class AnalysisGenerateRequest(BaseModel):
 
 
 def _analysis_ai_stream(prompt: str):
-    import os, urllib.request as urlreq
+    import os, requests as _req
     api_key = os.environ.get("DINOIKI_API_KEY", "")
     if not api_key:
         yield f"data: {json.dumps({'error': 'DINOIKI_API_KEY belum dikonfigurasi.'})}\n\n"
         yield "data: [DONE]\n\n"
         return
-    payload = json.dumps({
-        "model": "gpt-4o",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "stream": True,
-    }).encode()
-    req_obj = urlreq.Request(
-        _DINOIKI_URL, data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
-    )
     try:
-        with urlreq.urlopen(req_obj, timeout=120) as resp:
-            buf = b""
-            while True:
-                chunk = resp.read(1024)
-                if not chunk:
-                    break
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip()
-                    if not line.startswith(b"data:"):
-                        continue
-                    ps = line[5:].strip()
-                    if ps == b"[DONE]":
-                        return
-                    try:
-                        obj = json.loads(ps)
-                        text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
-                        if text:
-                            yield f"data: {json.dumps({'text': text})}\n\n"
-                    except Exception:
-                        pass
+        resp = _req.post(
+            _DINOIKI_URL,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            json={"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 4096, "temperature": 0.7, "stream": True},
+            stream=True, timeout=120,
+        )
+        if not resp.ok:
+            yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            if not line.startswith("data:"):
+                continue
+            ps = line[5:].strip()
+            if ps == "[DONE]":
+                break
+            try:
+                obj = json.loads(ps)
+                text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                if text:
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+            except Exception:
+                pass
     except Exception as exc:
         yield f"data: {json.dumps({'error': str(exc)})}\n\n"
     yield "data: [DONE]\n\n"
