@@ -3914,6 +3914,65 @@ def analysis_generate(dataset_id: str, req: AnalysisGenerateRequest):
     )
 
 
+class SaveAnalysisRequest(BaseModel):
+    scope: str
+    focus: str
+    ru: str = ""
+    equipment_id: str = ""
+    title: str
+    content: str
+
+@app.post("/api/datasets/{dataset_id}/analysis/saved")
+def save_analysis(dataset_id: str, req: SaveAnalysisRequest):
+    get_dataset(dataset_id)
+    connection = db_for(dataset_id)
+    try:
+        result = fetch_tuple(connection, """
+            INSERT INTO ai_analysis (scope, focus, ru, equipment_id, title, content)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id, created_at
+        """, [req.scope, req.focus, req.ru, req.equipment_id, req.title, req.content])
+        return {"id": result[0], "created_at": result[1].isoformat() if result[1] else None}
+    finally:
+        connection.close()
+
+@app.get("/api/datasets/{dataset_id}/analysis/saved")
+def list_saved_analyses(dataset_id: str):
+    get_dataset(dataset_id)
+    connection = db_for(dataset_id)
+    try:
+        result = rows(connection, """
+            SELECT id, scope, focus, ru, equipment_id, title, created_at
+            FROM ai_analysis ORDER BY created_at DESC LIMIT 50
+        """)
+        return [dict(r, created_at=r['created_at'].isoformat() if r.get('created_at') else None) for r in result]
+    finally:
+        connection.close()
+
+@app.get("/api/datasets/{dataset_id}/analysis/saved/{analysis_id}")
+def get_saved_analysis(dataset_id: str, analysis_id: int):
+    get_dataset(dataset_id)
+    connection = db_for(dataset_id)
+    try:
+        result = rows(connection, "SELECT * FROM ai_analysis WHERE id = %s", [analysis_id])
+        if not result:
+            raise HTTPException(status_code=404, detail="Analisis tidak ditemukan.")
+        r = result[0]
+        return dict(r, created_at=r['created_at'].isoformat() if r.get('created_at') else None)
+    finally:
+        connection.close()
+
+@app.delete("/api/datasets/{dataset_id}/analysis/saved/{analysis_id}")
+def delete_saved_analysis(dataset_id: str, analysis_id: int):
+    get_dataset(dataset_id)
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("DELETE FROM ai_analysis WHERE id = %s", [analysis_id])
+        return {"ok": True}
+    finally:
+        connection.close()
+
+
 DIST = Path(__file__).resolve().parents[1] / "dist"
 if DIST.exists():
     app.mount("/", StaticFiles(directory=DIST, html=True), name="artifact")

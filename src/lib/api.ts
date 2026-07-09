@@ -128,6 +128,14 @@ export const api = {
   equipmentCoverage: (id: string) => request<EquipmentCoverageDomain[]>(`/datasets/${id}/equipment-coverage`),
   equipmentCoverageUnmatched: (id: string, domain: string, ru = '', limit = 200) =>
     request<UnmatchedEquipment[]>(`/datasets/${id}/equipment-coverage/${domain}/unmatched?${new URLSearchParams({ ru, limit: String(limit) })}`),
+  saveAnalysis: (id: string, data: { scope: string; focus: string; ru: string; equipment_id: string; title: string; content: string }) =>
+    request<{ id: number; created_at: string }>(`/datasets/${id}/analysis/saved`, { method: 'POST', body: JSON.stringify(data) }),
+  listSavedAnalyses: (id: string) =>
+    request<{ id: number; scope: string; focus: string; ru: string; equipment_id: string; title: string; created_at: string }[]>(`/datasets/${id}/analysis/saved`),
+  getSavedAnalysis: (id: string, analysisId: number) =>
+    request<{ id: number; scope: string; focus: string; ru: string; equipment_id: string; title: string; content: string; created_at: string }>(`/datasets/${id}/analysis/saved/${analysisId}`),
+  deleteSavedAnalysis: (id: string, analysisId: number) =>
+    request<{ ok: boolean }>(`/datasets/${id}/analysis/saved/${analysisId}`, { method: 'DELETE' }),
 }
 
 export async function streamAnalysis(

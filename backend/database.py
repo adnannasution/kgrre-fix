@@ -159,6 +159,18 @@ def initialize(conn: psycopg.Connection) -> None:
             row_json jsonb DEFAULT '{}'::jsonb
         );
 
+        CREATE TABLE IF NOT EXISTS ai_analysis (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            dataset_id text NOT NULL DEFAULT current_setting('app.dataset_id', true),
+            scope text,
+            focus text,
+            ru text,
+            equipment_id text,
+            title text,
+            content text,
+            created_at timestamptz DEFAULT now()
+        );
+
         CREATE TABLE IF NOT EXISTS source_file (
             dataset_id text NOT NULL DEFAULT current_setting('app.dataset_id', true),
             file_name text,
@@ -194,7 +206,7 @@ def finalize(conn: psycopg.Connection) -> None:
 # Tabel berisi data per-dataset yang harus terisolasi via Row-Level Security.
 _RLS_TABLES = (
     "kg_node", "kg_relationship", "domain_record", "kg_identifier",
-    "import_issue", "load_summary", "graph_analysis", "source_file",
+    "import_issue", "load_summary", "graph_analysis", "source_file", "ai_analysis",
 )
 
 
