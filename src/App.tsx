@@ -3703,7 +3703,12 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
 function titleFor(page: Page) {
   return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment', analisis: 'Analisis AI' })[page]
 }
-function message(reason: unknown) { return reason instanceof Error ? reason.message : 'Terjadi kesalahan.' }
+function message(reason: unknown) {
+  if (reason instanceof Error) return reason.message
+  if (reason && typeof reason === 'object' && 'message' in reason) return String((reason as {message: unknown}).message)
+  if (typeof reason === 'string') return reason
+  return 'Terjadi kesalahan tidak dikenal.'
+}
 function format(value: number) { return new Intl.NumberFormat('id-ID').format(value || 0) }
 function compact(value: number) { return new Intl.NumberFormat('en', { notation: 'compact' }).format(value) }
 function bytes(value: number) { if (!value) return '0 B'; const units = ['B', 'KB', 'MB', 'GB']; const i = Math.min(Math.floor(Math.log(value) / Math.log(1024)), 3); return `${(value / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}` }
