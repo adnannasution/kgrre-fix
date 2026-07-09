@@ -102,13 +102,16 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
 
     # Readiness subtypes — cek SEBELUM readiness umum (kolom status_operation sama)
     if has('status_operation', 'status_operasi', 'status_item') and \
-            has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki'):
+            (has('tag_no_tangki', 'level_oil', 'nama_tangki', 'no_tangki', 'kapasitas_tangki') or
+             has_sub('tangki')):
         return 'readiness_tank'
     if has('status_operation', 'status_operasi', 'status_item') and \
-            has('dermaga', 'nama_dermaga', 'jetty', 'nama_jetty', 'jenis_dermaga'):
+            (has('dermaga', 'nama_dermaga', 'jetty', 'nama_jetty', 'jenis_dermaga') or
+             has_sub('jetty') or has('tuks', 'status_tuks', 'nomor_surat_tuks') or
+             has_sub('trestle') or has_sub('breasting_dolphin')):
         return 'readiness_jetty'
     if has('status_operation', 'status_operasi', 'status_item') and \
-            has('spm', 'single_point_mooring', 'mooring', 'nama_spm'):
+            (has('spm', 'single_point_mooring', 'mooring', 'nama_spm') or has_sub('spm')):
         return 'readiness_spm'
 
     # Workplan types — program_kerja dengan target/progres
