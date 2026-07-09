@@ -2799,6 +2799,71 @@ def _reliability_engineering_signals(connection, node_id: str, item: dict, prope
             or properties.get("kgrre_normalized_criticality")
         )
 
+        # (e) ICU Issue: isu integritas kondisi
+        icu = one(connection, """
+            SELECT count(*) icu_count,
+                   sum(CASE WHEN lower(coalesce(n.properties_json->>'icu_status','')) NOT IN ('closed','selesai','done','resolved') THEN 1 ELSE 0 END) icu_open_count
+            FROM kg_relationship r
+            JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='icu_issue'
+            WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_ICU_ISSUE' AND NOT r.is_candidate
+        """, [node_id]) or {}
+
+        # (f) Critical Equipment: apakah equipment ini masuk daftar critical
+        crit_eq = one(connection, """
+            SELECT count(*) ce_count,
+                   string_agg(DISTINCT nullif(n.properties_json->>'criticality_class',''), ', ' ORDER BY nullif(n.properties_json->>'criticality_class','')) ce_class
+            FROM kg_relationship r
+            JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='critical_equipment'
+            WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_CRITICAL_EQUIPMENT' AND NOT r.is_candidate
+        """, [node_id]) or {}
+
+        # (g) Zero Clamp: pemasangan klem sementara (indikasi kerusakan aktif)
+        zc = one(connection, f"""
+            SELECT count(*) zc_count,
+                   sum(CASE WHEN lower(coalesce(n.properties_json->>'status','')) NOT IN ('dilepas','removed','done','selesai','closed') THEN 1 ELSE 0 END) zc_active_count,
+                   mode() WITHIN GROUP (ORDER BY nullif(n.properties_json->>'type_damage','')) dominant_damage
+            FROM kg_relationship r
+            JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='zero_clamp'
+            WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_ZERO_CLAMP' AND NOT r.is_candidate
+        """, [node_id]) or {}
+
+        # (h) Pipeline Inspection: remaining life & integritas pipa
+        pi = one(connection, f"""
+            SELECT count(*) pi_count,
+                   min({num("n.properties_json->>'rem_life'")}) min_rem_life,
+                   sum(CASE WHEN {num("n.properties_json->>'rem_life'")} IS NOT NULL
+                              AND {num("n.properties_json->>'rem_life'")} < 5 THEN 1 ELSE 0 END) pi_near_eol
+            FROM kg_relationship r
+            JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='pipeline_inspection'
+            WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_PIPELINE_INSPECTION' AND NOT r.is_candidate
+        """, [node_id]) or {}
+
+        # (i) Power & Steam: monitoring utilitas (count saja, sinyal ketersediaan)
+        ps = one(connection, """
+            SELECT count(*) ps_count
+            FROM kg_relationship r
+            JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='power_steam'
+            WHERE r.source_node_id=%s AND r.relationship_type='EQUIPMENT_HAS_POWER_STEAM' AND NOT r.is_candidate
+        """, [node_id]) or {}
+
+        # (j) Readiness infrastruktur (Jetty/SPM/Tangki): langsung via edge
+        readiness_infra = {}
+        for ri_type, ri_rel in [
+            ('readiness_jetty', 'EQUIPMENT_HAS_READINESS_JETTY'),
+            ('readiness_spm',   'EQUIPMENT_HAS_READINESS_SPM'),
+            ('readiness_tank',  'EQUIPMENT_HAS_READINESS_TANK'),
+        ]:
+            ri = one(connection, f"""
+                SELECT count(*) cnt,
+                       sum(CASE WHEN lower(coalesce(n.properties_json->>'status_operation',''))
+                                  NOT IN ('running','operasi','normal','standby','operate') THEN 1 ELSE 0 END) not_normal
+                FROM kg_relationship r
+                JOIN kg_node n ON n.node_id=r.target_node_id AND n.node_type='{ri_type}'
+                WHERE r.source_node_id=%s AND r.relationship_type='{ri_rel}' AND NOT r.is_candidate
+            """, [node_id]) or {}
+            if int(ri.get('cnt') or 0):
+                readiness_infra[ri_type] = {'count': int(ri['cnt']), 'not_normal': int(ri.get('not_normal') or 0)}
+
         observations = int(rel.get("observations") or 0)
         signals = {
             # (a) keandalan
@@ -2830,7 +2895,25 @@ def _reliability_engineering_signals(connection, node_id: str, item: dict, prope
             # (d) inspeksi (tag-match exact-boundary, indikatif)
             "inspection_match_count": inspection_match_count,
             "inspection_findings": inspection_findings,
-            # (e) kritikalitas + keyakinan
+            # (e) ICU issue
+            "icu_count": int(icu.get("icu_count") or 0),
+            "icu_open_count": int(icu.get("icu_open_count") or 0),
+            # (f) critical equipment
+            "ce_count": int(crit_eq.get("ce_count") or 0),
+            "ce_class": crit_eq.get("ce_class") or None,
+            # (g) zero clamp
+            "zc_count": int(zc.get("zc_count") or 0),
+            "zc_active_count": int(zc.get("zc_active_count") or 0),
+            "zc_dominant_damage": zc.get("dominant_damage") or None,
+            # (h) pipeline inspection
+            "pi_count": int(pi.get("pi_count") or 0),
+            "pi_min_rem_life": _round(pi.get("min_rem_life")),
+            "pi_near_eol": int(pi.get("pi_near_eol") or 0),
+            # (i) power & steam
+            "ps_count": int(ps.get("ps_count") or 0),
+            # (j) readiness infrastruktur (jetty/spm/tank)
+            "readiness_infra": readiness_infra or None,
+            # (k) kritikalitas + keyakinan
             "criticality": str(criticality) if criticality not in (None, "") else None,
             "confidence_note": (
                 "kuat" if observations >= 6 else "indikasi" if observations >= 1 else "lemah"

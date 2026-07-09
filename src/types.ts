@@ -203,7 +203,25 @@ export interface ReliabilityEngineeringSignals {
   readiness_ru_level?: number
   readiness_association?: 'direct' | 'tag' | 'ru' | 'none' | string
   readiness_tag_samples?: string[]
-  // (e) kritikalitas + keyakinan
+  // (e) ICU issue
+  icu_count?: number
+  icu_open_count?: number
+  // (f) critical equipment
+  ce_count?: number
+  ce_class?: string | null
+  // (g) zero clamp
+  zc_count?: number
+  zc_active_count?: number
+  zc_dominant_damage?: string | null
+  // (h) pipeline inspection
+  pi_count?: number
+  pi_min_rem_life?: number | null
+  pi_near_eol?: number
+  // (i) power & steam
+  ps_count?: number
+  // (j) readiness infrastruktur (jetty/spm/tank)
+  readiness_infra?: Record<string, { count: number; not_normal: number }> | null
+  // (k) kritikalitas + keyakinan
   criticality?: string | null
   confidence_note?: string | null
 }
