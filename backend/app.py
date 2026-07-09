@@ -1924,7 +1924,7 @@ def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", lim
     connection = db_for(dataset_id)
     try:
         connection.execute("SET LOCAL statement_timeout = '20s'")
-        # Cari rel_type & eq_col untuk domain ini secara dinamis
+        # Cari rel_type & eq_col: dari relasi yang ada, atau dari _ALWAYS_SHOW_DOMAINS
         domain_info = rows(connection, """
             SELECT DISTINCT r.relationship_type
             FROM kg_relationship r
@@ -1934,9 +1934,14 @@ def equipment_coverage_unmatched(dataset_id: str, domain: str, ru: str = "", lim
               AND NOT r.is_candidate
             LIMIT 1
         """, [domain])
-        if not domain_info:
-            raise HTTPException(400, "Domain tidak dikenal atau belum ada relasi.")
-        rel_type = domain_info[0]['relationship_type']
+        if domain_info:
+            rel_type = domain_info[0]['relationship_type']
+        else:
+            # Cek _ALWAYS_SHOW_DOMAINS
+            always = {nt: (rt, ec) for nt, rt, ec in _ALWAYS_SHOW_DOMAINS}
+            if domain not in always:
+                raise HTTPException(400, "Domain tidak dikenal atau belum ada relasi.")
+            rel_type, _ = always[domain]
         eq_col = _EQ_COL_OVERRIDE.get(rel_type, 'equipment_raw')
         ru_filter = "AND dn.properties_json->>'refinery_unit' = %s" if ru else ""
         params = [ru] if ru else []
