@@ -29,6 +29,7 @@ const colors: Record<string, string> = {
   rkap_program: '#b58a2a',
   availability: '#2d77b3',
   metering: '#2a7e92',
+  inspection_plan: '#7c3aed',
   utility: '#6f9a3d',
 }
 

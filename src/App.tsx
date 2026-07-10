@@ -265,7 +265,7 @@ export default function App() {
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
-          <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
+          {false && <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />}
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
@@ -2919,6 +2919,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   bad_actor:               'Bad Actor',
   critical_equipment:      'Critical Equipment',
   metering:                'Metering',
+  inspection_plan:         'Inspection Plan',
   monitoring_operasi:      'Monitoring Operasi',
   rotor:                   'Rotor',
   atg:                     'ATG',
