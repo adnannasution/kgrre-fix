@@ -216,7 +216,10 @@ export default function App() {
       setJob(next)
       if (next.status === 'completed') {
         await refreshDatasets()
-        setActiveId(next.dataset_id ?? '')
+        // Hanya auto-switch ke dataset baru jika belum ada dataset yang aktif.
+        // Kalau sudah ada dataset aktif (mis. upload domain tambahan), jangan
+        // ganti activeId agar tampilan existing dataset tidak terganggu.
+        if (!activeId && next.dataset_id) setActiveId(next.dataset_id)
         setPage('overview')
         await refreshFolder()
       }
