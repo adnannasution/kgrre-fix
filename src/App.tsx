@@ -3274,6 +3274,8 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
   const [eqResults, setEqResults] = useState<GraphNode[]>([])
   const [eqSearching, setEqSearching] = useState(false)
   const [pickedEq, setPickedEq] = useState<GraphNode | null>(null)
+  // Cache: chain.id → equipment node yang sudah ditemukan, hindari re-search
+  const chainEqCache = useRef<Map<string, GraphNode>>(new Map())
 
   if (!dataset) return <NoDataset />
 
@@ -3340,6 +3342,14 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
   }
 
   const autoFindAndLoad = async (chain: Chain) => {
+    // Pakai cache kalau sudah pernah ketemu
+    const cached = chainEqCache.current.get(chain.id)
+    if (cached) {
+      setPickedEq(cached)
+      setEqQuery(cached.label)
+      void loadGraph(chain, cached)
+      return
+    }
     setLoading(true)
     setError('')
     setSelectedNode(null)
@@ -3367,6 +3377,7 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
         )
         const found = results.find(r => r.match)
         if (found) {
+          chainEqCache.current.set(chain.id, found.eq)
           setPickedEq(found.eq)
           setEqQuery(found.eq.label)
           await loadGraph(chain, found.eq)
@@ -3389,6 +3400,7 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
   }
 
   const handlePickEq = (eq: GraphNode) => {
+    if (selectedChain) chainEqCache.current.set(selectedChain.id, eq)
     setPickedEq(eq)
     setEqQuery(eq.label)
     setEqResults([])
