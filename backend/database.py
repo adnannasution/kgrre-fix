@@ -210,28 +210,11 @@ _RLS_TABLES = (
 )
 
 
-def rls_already_enabled(conn: psycopg.Connection) -> bool:
-    """True jika RLS sudah diaktifkan pada tabel utama (kg_node).
-    Digunakan untuk skip enable_rls() yang mahal (butuh exclusive lock)
-    bila sudah pernah dijalankan sebelumnya."""
-    from psycopg.rows import tuple_row
-    with conn.cursor(row_factory=tuple_row) as cur:
-        cur.execute(
-            "SELECT relrowsecurity FROM pg_class "
-            "WHERE relname = 'kg_node' AND relnamespace = 'public'::regnamespace"
-        )
-        row = cur.fetchone()
-    return bool(row and row[0])
-
-
 def enable_rls(conn: psycopg.Connection) -> None:
     """Aktifkan Row-Level Security agar setiap query otomatis ter-filter ke
     dataset aktif (session var app.dataset_id). Menghilangkan kebutuhan menulis
     'WHERE dataset_id=...' manual di puluhan query, sekaligus mencegah kebocoran
-    antar-dataset. Idempotent — skip jika sudah aktif untuk menghindari
-    exclusive lock pada tabel besar."""
-    if rls_already_enabled(conn):
-        return
+    antar-dataset. Idempotent."""
     for table in _RLS_TABLES:
         conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         conn.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
