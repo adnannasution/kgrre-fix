@@ -1184,9 +1184,15 @@ def _build_ppms_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
         SET ppms_id = 'node_ppms_' || md5(source_record_id);
 
         ALTER TABLE ppms_stage ADD COLUMN equipment_id VARCHAR;
+        -- Match dengan RU dulu (lebih presisi)
         UPDATE ppms_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE ppms_stage.refinery_unit = e.refinery_unit
+          AND norm_code(ppms_stage.equipment_raw) = norm_code(e.equipment_code_clean);
+        -- Fallback: match hanya equipment_code tanpa filter RU (untuk RU yang formatnya beda)
+        UPDATE ppms_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE ppms_stage.equipment_id IS NULL
           AND norm_code(ppms_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
 
