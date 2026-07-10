@@ -30,6 +30,7 @@ const colors: Record<string, string> = {
   availability: '#2d77b3',
   metering: '#2a7e92',
   inspection_plan: '#7c3aed',
+  ppms: '#059669',
   utility: '#6f9a3d',
 }
 
