@@ -706,6 +706,7 @@ def stats(dataset_id: str):
     with_db(dataset_id)
     connection = db_for(dataset_id)
     try:
+        connection.execute("SET LOCAL statement_timeout = '25s'")
         node_types = rows(connection, "SELECT node_type, count(*) count FROM kg_node GROUP BY node_type ORDER BY count DESC")
         edge_types = rows(connection, "SELECT relationship_type, is_candidate, count(*) count FROM kg_relationship GROUP BY relationship_type,is_candidate ORDER BY count DESC")
         totals = fetch_tuple(

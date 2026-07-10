@@ -166,6 +166,7 @@ export default function App() {
   const [datasets, setDatasets] = useState<DatasetSummary[]>([])
   const [activeId, setActiveId] = useState(cleanSession ? '' : localStorage.getItem('kg-active-dataset') ?? '')
   const [stats, setStats] = useState<DatasetStats>()
+  const [statsLoading, setStatsLoading] = useState(false)
   const [job, setJob] = useState<ImportJob>()
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -206,7 +207,9 @@ export default function App() {
     }
     if (cleanSession) localStorage.removeItem('kg-active-dataset')
     else localStorage.setItem('kg-active-dataset', activeId)
-    void api.stats(activeId).then(setStats).catch((reason) => setError(message(reason)))
+    setStatsLoading(true)
+    setStats(undefined)
+    api.stats(activeId).then(setStats).catch((reason) => setError(message(reason))).finally(() => setStatsLoading(false))
   }, [activeId])
 
   useEffect(() => {
