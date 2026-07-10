@@ -4663,21 +4663,109 @@ def _gather_chat_context(connection, question: str) -> str:
         except Exception:
             pass
 
-    # Equipment dengan paling banyak relasi (paling sering muncul di graph)
+    ru_clause_n = " AND n.properties_json->>'refinery_unit' ILIKE %s" if ru_filter else ""
+    params_eq = [ru_filter] if ru_filter else []
+
+    # === GRAPH-SPECIFIC INSIGHTS (pembeda utama vs SQL biasa) ===
+
+    # 1. Degree centrality — equipment paling banyak koneksi (hub node)
     try:
-        ru_clause = " AND n.properties_json->>'refinery_unit' ILIKE %s" if ru_filter else ""
-        params_eq = [ru_filter] if ru_filter else []
         top_eq = rows(connection,
-            f"""SELECT n.label, n.business_key, count(r.relationship_id) AS deg
+            f"""SELECT n.label, n.business_key,
+                       count(r.relationship_id) AS deg,
+                       count(DISTINCT r.relationship_type) AS domain_count,
+                       string_agg(DISTINCT r.relationship_type, ', ' ORDER BY r.relationship_type) AS domains
             FROM kg_node n
             JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
-            WHERE n.node_type='equipment'{ru_clause}
+            WHERE n.node_type='equipment'{ru_clause_n}
             GROUP BY n.node_id, n.label, n.business_key
-            ORDER BY deg DESC LIMIT 5""", params_eq)
+            ORDER BY deg DESC LIMIT 8""", params_eq)
         if top_eq:
-            lines.append("Top equipment berdasarkan jumlah koneksi di graph:")
+            lines.append("\n[GRAPH] Hub equipment (degree centrality tertinggi — terhubung ke banyak domain):")
             for r_ in top_eq:
-                lines.append(f"  - {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('deg','?')} relasi")
+                lines.append(f"  - {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('deg','?')} koneksi, {r_.get('domain_count','?')} domain [{r_.get('domains','')}]")
+    except Exception:
+        pass
+
+    # 2. Cross-domain intersection — equipment yang muncul sekaligus di bad_actor + critical + delayed RKAP (triple risk)
+    try:
+        triple_risk = rows(connection,
+            f"""SELECT n.label, n.business_key, n.properties_json->>'refinery_unit' AS ru
+            FROM kg_node n
+            WHERE n.node_type='equipment'{ru_clause_n}
+              AND EXISTS (
+                  SELECT 1 FROM kg_relationship r1 JOIN kg_node t1 ON t1.node_id=r1.target_node_id
+                  WHERE r1.source_node_id=n.node_id AND NOT r1.is_candidate AND t1.node_type='bad_actor'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM kg_relationship r2 JOIN kg_node t2 ON t2.node_id=r2.target_node_id
+                  WHERE r2.source_node_id=n.node_id AND NOT r2.is_candidate AND t2.node_type='critical_equipment'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM kg_relationship r3 JOIN kg_node t3 ON t3.node_id=r3.target_node_id
+                  WHERE r3.source_node_id=n.node_id AND NOT r3.is_candidate AND t3.node_type='rkap_program'
+                  AND (t3.properties_json->>'derived_is_delayed')='true'
+              )
+            LIMIT 10""", params_eq)
+        if triple_risk:
+            lines.append(f"\n[GRAPH] Triple-risk equipment (bad actor + critical + RKAP terlambat — hanya terlihat lewat KG multi-hop):")
+            for r_ in triple_risk:
+                lines.append(f"  ⚠ {r_.get('label','?')} ({r_.get('business_key','?')}) RU: {r_.get('ru','?')}")
+        else:
+            lines.append("\n[GRAPH] Triple-risk equipment (bad actor + critical + RKAP delayed): tidak ada saat ini.")
+    except Exception:
+        pass
+
+    # 3. Isolated nodes — equipment yang sama sekali tidak terhubung ke domain apapun (data gap)
+    try:
+        isolated = rows(connection,
+            f"""SELECT count(*) AS c FROM kg_node n
+            WHERE n.node_type='equipment'{ru_clause_n}
+              AND NOT EXISTS (
+                  SELECT 1 FROM kg_relationship r WHERE r.source_node_id=n.node_id AND NOT r.is_candidate
+              )""", params_eq)
+        _ru_clause_eq = " AND properties_json->>'refinery_unit' ILIKE %s" if ru_filter else ""
+        total_eq_cnt = fetch_tuple(connection,
+            f"SELECT count(*) FROM kg_node WHERE node_type='equipment'{_ru_clause_eq}",
+            params_eq)[0]
+        if isolated:
+            iso_cnt = int(isolated[0].get('c') or 0)
+            pct = round(iso_cnt / total_eq_cnt * 100, 1) if total_eq_cnt else 0
+            lines.append(f"\n[GRAPH] Equipment terisolasi (nol koneksi ke domain manapun): {iso_cnt} dari {total_eq_cnt} ({pct}%) — ini blind spot yang tidak terlihat di query SQL biasa.")
+    except Exception:
+        pass
+
+    # 4. Cascading risk path — equipment dengan open WO sekaligus top-risk reliability
+    try:
+        cascade = rows(connection,
+            f"""SELECT n.label, n.business_key,
+                       count(DISTINCT r_wo.relationship_id) AS open_wo_count,
+                       count(DISTINCT r_rel.relationship_id) AS risk_obs_count
+            FROM kg_node n
+            JOIN kg_relationship r_wo ON r_wo.source_node_id=n.node_id AND NOT r_wo.is_candidate
+            JOIN kg_node wo ON wo.node_id=r_wo.target_node_id AND wo.node_type IN ('maintenance_order','work_order')
+                AND (wo.properties_json->>'derived_is_open_order')='true'
+            JOIN kg_relationship r_rel ON r_rel.source_node_id=n.node_id AND NOT r_rel.is_candidate
+            JOIN kg_node rel ON rel.node_id=r_rel.target_node_id AND rel.node_type='reliability_observation'
+                AND (rel.properties_json->>'derived_is_top_risk')='true'
+            WHERE n.node_type='equipment'{ru_clause_n}
+            GROUP BY n.node_id, n.label, n.business_key
+            ORDER BY open_wo_count DESC LIMIT 5""", params_eq)
+        if cascade:
+            lines.append("\n[GRAPH] Cascading risk — equipment dengan open WO sekaligus top-risk reliability (multi-hop path: equipment→WO→reliability):")
+            for r_ in cascade:
+                lines.append(f"  🔴 {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('open_wo_count')} open WO, {r_.get('risk_obs_count')} risk observation")
+    except Exception:
+        pass
+
+    # 5. Relationship type distribution — peta konektivitas graph
+    try:
+        rel_dist = rows(connection,
+            "SELECT relationship_type, count(*) AS c FROM kg_relationship WHERE NOT is_candidate GROUP BY relationship_type ORDER BY c DESC LIMIT 12")
+        if rel_dist:
+            lines.append("\n[GRAPH] Distribusi tipe relasi (peta konektivitas dataset):")
+            for r_ in rel_dist:
+                lines.append(f"  {r_.get('relationship_type','?')}: {r_.get('c','?')} edge")
     except Exception:
         pass
 
@@ -4705,10 +4793,21 @@ def dataset_chat(dataset_id: str, req: ChatRequest):
         connection.close()
 
     system_msg = (
-        "Kamu adalah asisten AI untuk sistem knowledge graph kilang minyak (KGRRE). "
-        "Jawab pertanyaan user berdasarkan data faktual dari knowledge graph berikut. "
-        "Jika data tidak mencukupi untuk menjawab secara pasti, katakan demikian. "
-        "Gunakan Bahasa Indonesia. Jangan mengarang data yang tidak ada di konteks.\n\n"
+        "Kamu adalah asisten AI untuk sistem knowledge graph (KG) kilang minyak KGRRE. "
+        "Berbeda dengan database SQL biasa yang hanya menjawab 'ada berapa baris', "
+        "knowledge graph merepresentasikan RELASI antar entitas sehingga kamu harus "
+        "bernalar berdasarkan KONEKSI dan POLA, bukan hanya nilai individual.\n\n"
+        "CARA MENJAWAB BERBASIS KNOWLEDGE GRAPH:\n"
+        "1. MULTI-HOP: Telusuri rantai relasi — contoh: equipment → punya bad actor → sekaligus punya RKAP terlambat → ini cascading risk yang tidak terlihat di query SQL flat.\n"
+        "2. CENTRALITY: Sebutkan node mana yang paling banyak koneksinya (hub) — equipment dengan degree tinggi adalah titik kritis dalam jaringan.\n"
+        "3. CROSS-DOMAIN INTERSECTION: Identifikasi entitas yang muncul di beberapa domain sekaligus — ini sinyal risiko majemuk yang hanya bisa dilihat lewat graph.\n"
+        "4. GAP / ISOLATED NODE: Equipment tanpa koneksi apapun = blind spot operasional, artinya tidak ada data maintenance/reliability terhubung ke equipment itu.\n"
+        "5. POLA STRUKTURAL: Apakah failure mode tertentu berkonsentrasi di satu RU? Apakah equipment kritis justru minim relasi (data gap)?\n\n"
+        "LARANGAN:\n"
+        "- Jangan jawab seperti 'tabel X memiliki Y baris' — itu cara SQL.\n"
+        "- Jangan mengarang data yang tidak ada di konteks.\n"
+        "- Jika data tidak ada, katakan demikian dengan jelas.\n"
+        "Gunakan Bahasa Indonesia. Sertakan interpretasi graph, bukan hanya pembacaan angka.\n\n"
         f"=== DATA KNOWLEDGE GRAPH ===\n{ctx}\n==========================="
     )
 
@@ -4843,6 +4942,64 @@ def _build_node_context(connection, node_id: str) -> str:
     except Exception:
         pass
 
+    # === POSISI NODE DALAM GRAPH (KG-specific insight) ===
+    try:
+        # Degree dan domain coverage node ini
+        degree_row = rows(connection, """
+            SELECT count(*) AS out_degree, count(DISTINCT relationship_type) AS domain_count,
+                   string_agg(DISTINCT relationship_type, ', ' ORDER BY relationship_type) AS connected_domains
+            FROM kg_relationship WHERE source_node_id = %s AND NOT is_candidate
+        """, [node_id])
+        if degree_row:
+            d = degree_row[0]
+            lines.append(f"\n=== POSISI DALAM GRAPH ===")
+            lines.append(f"Out-degree (jumlah koneksi keluar): {d.get('out_degree',0)}")
+            lines.append(f"Domain terhubung ({d.get('domain_count',0)}): {d.get('connected_domains') or 'tidak ada'}")
+            # Bandingkan dengan rata-rata equipment di RU yang sama
+            ru_val = props.get('refinery_unit', '')
+            if ru_val and n['node_type'] == 'equipment':
+                avg_row = rows(connection, """
+                    SELECT avg(deg) AS avg_deg FROM (
+                        SELECT count(r.relationship_id) AS deg
+                        FROM kg_node n2
+                        LEFT JOIN kg_relationship r ON r.source_node_id=n2.node_id AND NOT r.is_candidate
+                        WHERE n2.node_type='equipment' AND n2.properties_json->>'refinery_unit' ILIKE %s
+                        GROUP BY n2.node_id
+                    ) sub
+                """, [f'%{ru_val}%'])
+                if avg_row and avg_row[0].get('avg_deg'):
+                    avg_deg = round(float(avg_row[0]['avg_deg']), 1)
+                    own_deg = int(d.get('out_degree') or 0)
+                    if own_deg == 0:
+                        lines.append(f"⚠ Node ini TERISOLASI — tidak terhubung ke domain apapun (rata-rata equipment di RU ini: {avg_deg} koneksi). Ini adalah data gap serius.")
+                    elif own_deg > avg_deg * 2:
+                        lines.append(f"★ Node ini adalah HUB — koneksi ({own_deg}) jauh di atas rata-rata equipment di RU ini ({avg_deg}). Titik kritis dalam jaringan.")
+                    elif own_deg < avg_deg * 0.5:
+                        lines.append(f"↓ Koneksi node ini ({own_deg}) di bawah rata-rata equipment di RU ini ({avg_deg}). Coverage data terbatas.")
+                    else:
+                        lines.append(f"Koneksi node ini ({own_deg}) mendekati rata-rata equipment di RU ini ({avg_deg}).")
+    except Exception:
+        pass
+
+    # 2-hop: domain apa yang bisa dicapai lewat 2 lompatan (misalnya: equipment → WO → material)
+    try:
+        two_hop = rows(connection, """
+            SELECT DISTINCT t2.node_type AS hop2_type, count(*) AS c
+            FROM kg_relationship r1
+            JOIN kg_node mid ON mid.node_id = r1.target_node_id
+            JOIN kg_relationship r2 ON r2.source_node_id = mid.node_id AND NOT r2.is_candidate
+            JOIN kg_node t2 ON t2.node_id = r2.target_node_id
+            WHERE r1.source_node_id = %s AND NOT r1.is_candidate
+              AND t2.node_id != %s
+            GROUP BY t2.node_type ORDER BY c DESC LIMIT 8
+        """, [node_id, node_id])
+        if two_hop:
+            lines.append(f"\n2-hop reachability (entitas yang terhubung lewat 2 lompatan relasi):")
+            for r_ in two_hop:
+                lines.append(f"  → {r_.get('hop2_type','?')}: {r_.get('c','?')} node")
+    except Exception:
+        pass
+
     return '\n'.join(lines)
 
 
@@ -4864,10 +5021,19 @@ def node_chat(dataset_id: str, req: NodeChatRequest):
         connection.close()
 
     system_msg = (
-        "Kamu adalah asisten AI untuk sistem knowledge graph kilang minyak (KGRRE). "
-        "User sedang melihat detail sebuah node/entitas dan bertanya tentangnya. "
-        "Jawab berdasarkan data faktual berikut saja. Jangan mengarang. "
-        "Gunakan Bahasa Indonesia. Jika data tidak ada, katakan 'tidak tercatat'.\n\n"
+        "Kamu adalah asisten AI untuk sistem knowledge graph (KG) kilang minyak KGRRE. "
+        "User sedang menganalisis sebuah node/entitas spesifik dalam graph.\n\n"
+        "CARA MENJAWAB BERBASIS KNOWLEDGE GRAPH — berbeda dari SQL biasa:\n"
+        "1. INTERPRETASI POSISI: Apakah node ini HUB (banyak koneksi = titik kritis)? Terisolasi (data gap)? Di bawah rata-rata?\n"
+        "2. ANALISIS RELASI: Baca relasi bukan sebagai 'daftar', tapi sebagai KONTEKS OPERASIONAL — work order open artinya ada pekerjaan tertunda, bad actor artinya ada riwayat kegagalan berulang.\n"
+        "3. MULTI-HOP REASONING: Jika ada 2-hop reachability, jelaskan apa artinya secara operasional — contoh: 'equipment ini terhubung ke reliability_observation yang top-risk, dan juga punya RKAP terlambat, artinya risiko kegagalan tinggi dengan program perbaikan yang belum selesai'.\n"
+        "4. CROSS-DOMAIN INTERSECTION: Sebutkan domain apa saja yang terhubung ke node ini dan apa implikasinya bersama-sama.\n"
+        "5. GAP: Jika ada domain yang tidak terhubung (misal tidak ada inspection_plan), sebutkan sebagai potensi blind spot.\n\n"
+        "LARANGAN:\n"
+        "- Jangan jawab seperti membaca tabel SQL ('kolom X bernilai Y').\n"
+        "- Jangan mengarang data yang tidak ada di konteks di bawah.\n"
+        "- Jika data tidak ada, katakan 'tidak tercatat dalam graph'.\n"
+        "Gunakan Bahasa Indonesia. Berikan insight operasional, bukan sekadar daftar nilai.\n\n"
         f"{node_ctx}"
     )
 
