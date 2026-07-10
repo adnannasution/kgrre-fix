@@ -4417,6 +4417,681 @@ def delete_saved_analysis(dataset_id: str, analysis_id: int):
         connection.close()
 
 
+class ChatRequest(BaseModel):
+    question: str
+    history: list = []   # [{role, content}]
+
+
+_CHAT_SYSTEM_PROMPT = """Kamu adalah asisten AI untuk sistem knowledge graph (KG) kilang minyak KGRRE.
+
+Kamu melayani siapa saja yang bertanya — engineer, supervisor, manajer, VP, direktur — tanpa perlu tahu siapa mereka. Cara kamu menjawab ditentukan otomatis dari ISI pertanyaannya:
+
+BACA LEVEL PERTANYAAN SECARA OTOMATIS:
+• Pertanyaan teknis/spesifik (kode equipment, MTBF, failure mode, status WO, detail inspeksi)
+  → Jawab teknis dan spesifik. Sertakan angka, kode, dan rekomendasi tindakan teknis.
+
+• Pertanyaan agregat/perbandingan (berapa total, persentase, trend, perbandingan antar RU)
+  → Jawab dengan ringkasan numerik + konteks (distribusi, outlier, pola).
+
+• Pertanyaan dampak/risiko (jika X terjadi, apa akibatnya; bottleneck; kegagalan kritis)
+  → Telusuri rantai relasi multi-hop. Identifikasi cascade risk yang tidak terlihat di data flat.
+
+• Pertanyaan insight/strategi/prioritas (sebaiknya apa, mana yang perlu diperhatikan, rekomendasi)
+  → Sintesis data menjadi narasi bermakna. Sebutkan prioritas, gap, dan implikasi operasional/bisnis.
+
+• Pertanyaan pencarian (cari equipment X, info tentang Y)
+  → Tampilkan entitas yang relevan + posisinya dalam graph (hub/terisolasi, domain terhubung).
+
+CARA MENJAWAB BERBASIS KNOWLEDGE GRAPH — ini yang membedakan dari query SQL biasa:
+• MULTI-HOP: Baca rantai relasi antar entitas, bukan hanya nilai per field. Equipment → WO open → reliability top-risk → RKAP terlambat = cascading risk yang hanya terlihat lewat graph.
+• CENTRALITY: Equipment dengan banyak koneksi ke banyak domain = hub = titik kritis jaringan.
+• CROSS-DOMAIN: Entitas yang muncul di beberapa domain sekaligus = sinyal risiko majemuk.
+• ISOLATED NODE: Equipment tanpa koneksi = blind spot operasional (tidak ada data apapun terhubung).
+• POLA STRUKTURAL: Distribusi failure mode, konsentrasi risiko per RU, gap coverage domain.
+
+LARANGAN:
+• Jangan bilang "tabel X memiliki Y baris" — itu cara SQL.
+• Jangan mengarang data yang tidak ada di konteks.
+• Jangan sertakan jargon teknis graph (node/edge/graph) dalam jawaban ke user — pakai bahasa operasional (equipment, relasi, terhubung ke, dst.).
+
+Gunakan Bahasa Indonesia. Sesuaikan kedalaman jawaban dengan level pertanyaan yang masuk.
+"""
+
+
+def _build_chat_system_prompt(question: str, ctx: str) -> str:
+    return f"{_CHAT_SYSTEM_PROMPT}\n=== DATA KNOWLEDGE GRAPH ===\n{ctx}\n==========================="
+
+
+def _props_to_text(props: dict) -> str:
+    """Ubah properties_json dict menjadi teks ringkas untuk konteks AI."""
+    skip = {'node_id', 'dataset_id'}
+    parts = []
+    for k, v in props.items():
+        if k in skip or v is None or str(v).strip() in ('', '0', 'None'):
+            continue
+        parts.append(f"{k}: {v}")
+    return ', '.join(parts[:30])  # max 30 field agar tidak terlalu panjang
+
+
+def _entity_lookup(connection, question: str) -> str:
+    """Cari entitas spesifik (equipment/node) yang disebut di pertanyaan dan ambil detail propertinya."""
+    import re
+    lines = []
+
+    # Token kandidat: kata 2+ karakter, angka-huruf (kode equipment), atau frasa dalam kutip
+    tokens = re.findall(r'"([^"]+)"|\'([^\']+)\'|([A-Z0-9][A-Z0-9\-\/]{2,})', question.upper())
+    # Juga ekstrak kata bermakna panjang (bukan stopword umum)
+    stopwords = {'APA', 'YANG', 'DAN', 'DARI', 'UNTUK', 'PADA', 'DENGAN', 'DI', 'INI',
+                 'ITU', 'ADALAH', 'BERAPA', 'BAGAIMANA', 'DIMANA', 'KAPAN', 'SIAPA',
+                 'STATUS', 'DATA', 'DETAIL', 'INFO', 'LIST', 'SEMUA', 'TOTAL', 'JUMLAH'}
+    candidates = set()
+    for t in tokens:
+        word = (t[0] or t[1] or t[2]).strip()
+        if word and word not in stopwords and len(word) >= 3:
+            candidates.add(word)
+
+    # Juga cari kata-kata panjang dari pertanyaan asli (nama equipment biasanya unik)
+    for word in re.findall(r'\b\w{4,}\b', question):
+        upper = word.upper()
+        if upper not in stopwords and not upper.startswith('PPMS') and len(upper) >= 4:
+            candidates.add(upper)
+
+    if not candidates:
+        return ''
+
+    found_nodes = []
+    for candidate in list(candidates)[:8]:  # max 8 token dicari
+        try:
+            hits = rows(connection, """
+                SELECT node_id, node_type, label, business_key, properties_json
+                FROM kg_node
+                WHERE lower(label) LIKE lower(%s)
+                   OR lower(business_key) LIKE lower(%s)
+                   OR lower(node_id) LIKE lower(%s)
+                LIMIT 3
+            """, [f'%{candidate}%', f'%{candidate}%', f'%{candidate}%'])
+            found_nodes.extend(hits)
+        except Exception:
+            pass
+
+    if not found_nodes:
+        return ''
+
+    # Deduplikasi by node_id
+    seen = set()
+    unique_nodes = []
+    for n in found_nodes:
+        if n['node_id'] not in seen:
+            seen.add(n['node_id'])
+            unique_nodes.append(n)
+
+    lines.append(f"\n=== ENTITAS SPESIFIK YANG DITEMUKAN ({len(unique_nodes)} node) ===")
+    for n in unique_nodes[:6]:
+        props = n.get('properties_json') or {}
+        lines.append(f"\n[{n['node_type']}] {n['label']} (ID: {n['business_key']})")
+        props_text = _props_to_text(props)
+        if props_text:
+            lines.append(f"  Properties: {props_text}")
+        # Ambil relasi langsung node ini
+        try:
+            rels = rows(connection, """
+                SELECT r.relationship_type, t.label, t.node_type, t.business_key,
+                       t.properties_json->>'status' AS status,
+                       t.properties_json->>'derived_is_open_order' AS open_order,
+                       t.properties_json->>'derived_status_bucket' AS status_bucket,
+                       t.properties_json->>'mtbf' AS mtbf,
+                       t.properties_json->>'failure_mode' AS failure_mode,
+                       t.properties_json->>'status_optimasi' AS status_optimasi,
+                       t.properties_json->>'type_pekerjaan' AS type_pekerjaan
+                FROM kg_relationship r
+                JOIN kg_node t ON t.node_id = r.target_node_id
+                WHERE r.source_node_id = %s AND NOT r.is_candidate
+                LIMIT 20
+            """, [n['node_id']])
+            if rels:
+                lines.append(f"  Relasi langsung ({len(rels)}):")
+                for r_ in rels:
+                    detail_parts = []
+                    for fld in ('status', 'open_order', 'status_bucket', 'mtbf', 'failure_mode', 'status_optimasi', 'type_pekerjaan'):
+                        val = r_.get(fld)
+                        if val and str(val).strip() not in ('', 'None', 'false'):
+                            detail_parts.append(f"{fld}={val}")
+                    detail = f" [{', '.join(detail_parts)}]" if detail_parts else ''
+                    lines.append(f"    - {r_['relationship_type']} → {r_['node_type']}: {r_['label']} ({r_['business_key']}){detail}")
+        except Exception:
+            pass
+
+    return '\n'.join(lines)
+
+
+def _gather_chat_context(connection, question: str) -> str:
+    """Kumpulkan fakta relevan dari KG berdasarkan kata kunci di pertanyaan."""
+    import re
+    q_lower = question.lower()
+
+    # Deteksi RU dari pertanyaan
+    ru_pattern = re.compile(r'\bru\s*(i{1,4}|iv|vi{0,3}|[1-9])\b', re.IGNORECASE)
+    ru_matches = ru_pattern.findall(q_lower)
+    ru_filter = None
+    if ru_matches:
+        raw = ru_matches[0].upper().strip()
+        ru_filter = f'%{raw}%'
+
+    # Deteksi node type dari pertanyaan
+    type_keywords = {
+        'equipment': ['equipment', 'alat', 'mesin', 'pump', 'compressor', 'vessel', 'heat exchanger', 'turbin'],
+        'reliability_observation': ['reliability', 'mtbf', 'mttr', 'bad actor', 'failure', 'kegagalan', 'keandalan'],
+        'maintenance_order': ['work order', 'wo ', 'maintenance order', 'perawatan', 'perbaikan', 'order'],
+        'notification': ['notification', 'notifikasi', 'laporan kerusakan'],
+        'rkap_program': ['rkap', 'program', 'anggaran', 'budget', 'biaya'],
+        'inspection_plan': ['inspection plan', 'rencana inspeksi', 'inspeksi'],
+        'ppms': ['ppms', 'predictive', 'prediktif', 'kondisi', 'model'],
+        'bad_actor': ['bad actor', 'paling sering rusak', 'breakdown', 'failure mode'],
+        'critical_equipment': ['critical', 'kritis', 'prioritas'],
+        'readiness_record': ['readiness', 'kesiapan', 'siap operasi'],
+    }
+    focus_types = [ntype for ntype, kws in type_keywords.items() if any(kw in q_lower for kw in kws)]
+    if not focus_types:
+        focus_types = ['equipment', 'reliability_observation', 'maintenance_order']
+
+    lines = []
+
+    # Statistik umum dataset
+    try:
+        total_eq = fetch_tuple(connection, "SELECT count(*) FROM kg_node WHERE node_type='equipment'")[0]
+        total_rel = fetch_tuple(connection, "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")[0]
+        lines.append(f"Dataset: {total_eq} equipment, {total_rel} relasi terverifikasi.")
+    except Exception:
+        pass
+
+    # Statistik per RU jika ada filter
+    if ru_filter:
+        try:
+            eq_ru = fetch_tuple(connection,
+                "SELECT count(*) FROM kg_node WHERE node_type='equipment' AND properties_json->>'refinery_unit' ILIKE %s",
+                [ru_filter])[0]
+            lines.append(f"Jumlah equipment di RU '{ru_matches[0].upper()}': {eq_ru}.")
+        except Exception:
+            pass
+
+    # Data per domain yang relevan
+    for ntype in focus_types[:4]:
+        try:
+            params = [ntype]
+            ru_clause = ""
+            if ru_filter:
+                ru_clause = " AND properties_json->>'refinery_unit' ILIKE %s"
+                params.append(ru_filter)
+            cnt = fetch_tuple(connection,
+                f"SELECT count(*) FROM kg_node WHERE node_type=%s{ru_clause}", params)[0]
+            if cnt == 0:
+                continue
+            lines.append(f"Jumlah node '{ntype}'{' di RU ini' if ru_filter else ''}: {cnt}.")
+
+            if ntype == 'reliability_observation':
+                agg = rows(connection,
+                    f"""SELECT
+                        sum(CASE WHEN (properties_json->>'derived_is_top_risk')='true' THEN 1 ELSE 0 END) AS top_risk,
+                        avg(CASE WHEN properties_json->>'mtbf' ~ '^[0-9]' THEN (properties_json->>'mtbf')::float END) AS avg_mtbf,
+                        avg(CASE WHEN properties_json->>'mttr' ~ '^[0-9]' THEN (properties_json->>'mttr')::float END) AS avg_mttr
+                    FROM kg_node WHERE node_type='reliability_observation'{ru_clause}""", params[1:] if ru_filter else [])
+                if agg:
+                    a = agg[0]
+                    lines.append(f"  Top risk: {a.get('top_risk') or 0}, Avg MTBF: {round(float(a['avg_mtbf'] or 0),1)}h, Avg MTTR: {round(float(a['avg_mttr'] or 0),1)}h.")
+                top_ba = rows(connection,
+                    f"""SELECT label, properties_json->>'failure_mode' AS fm, properties_json->>'mtbf' AS mtbf
+                    FROM kg_node WHERE node_type='reliability_observation'{ru_clause}
+                    AND (properties_json->>'derived_is_top_risk')='true'
+                    ORDER BY (CASE WHEN properties_json->>'mtbf' ~ '^[0-9]' THEN (properties_json->>'mtbf')::float END) ASC NULLS LAST
+                    LIMIT 5""", params[1:] if ru_filter else [])
+                if top_ba:
+                    lines.append("  Top bad actor (MTBF terendah):")
+                    for r_ in top_ba:
+                        lines.append(f"    - {r_.get('label','?')} | failure: {r_.get('fm','?')} | MTBF: {r_.get('mtbf','?')}h")
+
+            elif ntype in ('maintenance_order', 'work_order'):
+                agg = rows(connection,
+                    f"""SELECT
+                        sum(CASE WHEN (properties_json->>'derived_is_open_order')='true' THEN 1 ELSE 0 END) AS open_wos,
+                        sum(CASE WHEN properties_json->>'derived_status_bucket' IN ('WAMA','WASR') THEN 1 ELSE 0 END) AS waiting_mat
+                    FROM kg_node WHERE node_type=%s{ru_clause}""", params)
+                if agg:
+                    a = agg[0]
+                    lines.append(f"  Open WO: {a.get('open_wos') or 0}, Menunggu material: {a.get('waiting_mat') or 0}.")
+
+            elif ntype == 'rkap_program':
+                agg = rows(connection,
+                    f"""SELECT
+                        sum(CASE WHEN (properties_json->>'derived_is_delayed')='true' THEN 1 ELSE 0 END) AS delayed,
+                        sum(CASE WHEN properties_json->>'derived_planned_cost' ~ '^[0-9]'
+                            THEN (properties_json->>'derived_planned_cost')::float ELSE 0 END) AS total_budget
+                    FROM kg_node WHERE node_type='rkap_program'{ru_clause}""", params[1:] if ru_filter else [])
+                if agg:
+                    a = agg[0]
+                    lines.append(f"  Program terlambat: {a.get('delayed') or 0}, Total budget: IDR {int(a.get('total_budget') or 0):,}.")
+
+            elif ntype == 'bad_actor':
+                top = rows(connection,
+                    f"""SELECT properties_json->>'failure_mode' AS fm, count(*) AS c
+                    FROM kg_node WHERE node_type='bad_actor'{ru_clause}
+                    GROUP BY fm ORDER BY c DESC LIMIT 5""", params[1:] if ru_filter else [])
+                if top:
+                    lines.append("  Top failure mode bad actor:")
+                    for r_ in top:
+                        lines.append(f"    - {r_.get('fm','?')}: {r_.get('c','?')} kasus")
+
+            elif ntype == 'inspection_plan':
+                top = rows(connection,
+                    f"""SELECT properties_json->>'type_pekerjaan' AS tp, count(*) AS c
+                    FROM kg_node WHERE node_type='inspection_plan'{ru_clause}
+                    GROUP BY tp ORDER BY c DESC LIMIT 5""", params[1:] if ru_filter else [])
+                if top:
+                    lines.append("  Top type pekerjaan inspeksi:")
+                    for r_ in top:
+                        lines.append(f"    - {r_.get('tp','?')}: {r_.get('c','?')} rencana")
+
+            elif ntype == 'ppms':
+                agg = rows(connection,
+                    f"""SELECT properties_json->>'status_optimasi' AS st, count(*) AS c
+                    FROM kg_node WHERE node_type='ppms'{ru_clause}
+                    GROUP BY st ORDER BY c DESC LIMIT 5""", params[1:] if ru_filter else [])
+                if agg:
+                    lines.append("  Status optimasi PPMS:")
+                    for r_ in agg:
+                        lines.append(f"    - {r_.get('st','?')}: {r_.get('c','?')}")
+
+        except Exception:
+            pass
+
+    ru_clause_n = " AND n.properties_json->>'refinery_unit' ILIKE %s" if ru_filter else ""
+    params_eq = [ru_filter] if ru_filter else []
+
+    # === GRAPH-SPECIFIC INSIGHTS (pembeda utama vs SQL biasa) ===
+
+    # 1. Degree centrality — equipment paling banyak koneksi (hub node)
+    try:
+        top_eq = rows(connection,
+            f"""SELECT n.label, n.business_key,
+                       count(r.relationship_id) AS deg,
+                       count(DISTINCT r.relationship_type) AS domain_count,
+                       string_agg(DISTINCT r.relationship_type, ', ' ORDER BY r.relationship_type) AS domains
+            FROM kg_node n
+            JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+            WHERE n.node_type='equipment'{ru_clause_n}
+            GROUP BY n.node_id, n.label, n.business_key
+            ORDER BY deg DESC LIMIT 8""", params_eq)
+        if top_eq:
+            lines.append("\n[GRAPH] Hub equipment (degree centrality tertinggi — terhubung ke banyak domain):")
+            for r_ in top_eq:
+                lines.append(f"  - {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('deg','?')} koneksi, {r_.get('domain_count','?')} domain [{r_.get('domains','')}]")
+    except Exception:
+        pass
+
+    # 2. Cross-domain intersection — equipment yang muncul sekaligus di bad_actor + critical + delayed RKAP (triple risk)
+    try:
+        triple_risk = rows(connection,
+            f"""SELECT n.label, n.business_key, n.properties_json->>'refinery_unit' AS ru
+            FROM kg_node n
+            WHERE n.node_type='equipment'{ru_clause_n}
+              AND EXISTS (
+                  SELECT 1 FROM kg_relationship r1 JOIN kg_node t1 ON t1.node_id=r1.target_node_id
+                  WHERE r1.source_node_id=n.node_id AND NOT r1.is_candidate AND t1.node_type='bad_actor'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM kg_relationship r2 JOIN kg_node t2 ON t2.node_id=r2.target_node_id
+                  WHERE r2.source_node_id=n.node_id AND NOT r2.is_candidate AND t2.node_type='critical_equipment'
+              )
+              AND EXISTS (
+                  SELECT 1 FROM kg_relationship r3 JOIN kg_node t3 ON t3.node_id=r3.target_node_id
+                  WHERE r3.source_node_id=n.node_id AND NOT r3.is_candidate AND t3.node_type='rkap_program'
+                  AND (t3.properties_json->>'derived_is_delayed')='true'
+              )
+            LIMIT 10""", params_eq)
+        if triple_risk:
+            lines.append(f"\n[GRAPH] Triple-risk equipment (bad actor + critical + RKAP terlambat — hanya terlihat lewat KG multi-hop):")
+            for r_ in triple_risk:
+                lines.append(f"  ⚠ {r_.get('label','?')} ({r_.get('business_key','?')}) RU: {r_.get('ru','?')}")
+        else:
+            lines.append("\n[GRAPH] Triple-risk equipment (bad actor + critical + RKAP delayed): tidak ada saat ini.")
+    except Exception:
+        pass
+
+    # 3. Isolated nodes — equipment yang sama sekali tidak terhubung ke domain apapun (data gap)
+    try:
+        isolated = rows(connection,
+            f"""SELECT count(*) AS c FROM kg_node n
+            WHERE n.node_type='equipment'{ru_clause_n}
+              AND NOT EXISTS (
+                  SELECT 1 FROM kg_relationship r WHERE r.source_node_id=n.node_id AND NOT r.is_candidate
+              )""", params_eq)
+        _ru_clause_eq = " AND properties_json->>'refinery_unit' ILIKE %s" if ru_filter else ""
+        total_eq_cnt = fetch_tuple(connection,
+            f"SELECT count(*) FROM kg_node WHERE node_type='equipment'{_ru_clause_eq}",
+            params_eq)[0]
+        if isolated:
+            iso_cnt = int(isolated[0].get('c') or 0)
+            pct = round(iso_cnt / total_eq_cnt * 100, 1) if total_eq_cnt else 0
+            lines.append(f"\n[GRAPH] Equipment terisolasi (nol koneksi ke domain manapun): {iso_cnt} dari {total_eq_cnt} ({pct}%) — ini blind spot yang tidak terlihat di query SQL biasa.")
+    except Exception:
+        pass
+
+    # 4. Cascading risk path — equipment dengan open WO sekaligus top-risk reliability
+    try:
+        cascade = rows(connection,
+            f"""SELECT n.label, n.business_key,
+                       count(DISTINCT r_wo.relationship_id) AS open_wo_count,
+                       count(DISTINCT r_rel.relationship_id) AS risk_obs_count
+            FROM kg_node n
+            JOIN kg_relationship r_wo ON r_wo.source_node_id=n.node_id AND NOT r_wo.is_candidate
+            JOIN kg_node wo ON wo.node_id=r_wo.target_node_id AND wo.node_type IN ('maintenance_order','work_order')
+                AND (wo.properties_json->>'derived_is_open_order')='true'
+            JOIN kg_relationship r_rel ON r_rel.source_node_id=n.node_id AND NOT r_rel.is_candidate
+            JOIN kg_node rel ON rel.node_id=r_rel.target_node_id AND rel.node_type='reliability_observation'
+                AND (rel.properties_json->>'derived_is_top_risk')='true'
+            WHERE n.node_type='equipment'{ru_clause_n}
+            GROUP BY n.node_id, n.label, n.business_key
+            ORDER BY open_wo_count DESC LIMIT 5""", params_eq)
+        if cascade:
+            lines.append("\n[GRAPH] Cascading risk — equipment dengan open WO sekaligus top-risk reliability (multi-hop path: equipment→WO→reliability):")
+            for r_ in cascade:
+                lines.append(f"  🔴 {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('open_wo_count')} open WO, {r_.get('risk_obs_count')} risk observation")
+    except Exception:
+        pass
+
+    # 5. Relationship type distribution — peta konektivitas graph
+    try:
+        rel_dist = rows(connection,
+            "SELECT relationship_type, count(*) AS c FROM kg_relationship WHERE NOT is_candidate GROUP BY relationship_type ORDER BY c DESC LIMIT 12")
+        if rel_dist:
+            lines.append("\n[GRAPH] Distribusi tipe relasi (peta konektivitas dataset):")
+            for r_ in rel_dist:
+                lines.append(f"  {r_.get('relationship_type','?')}: {r_.get('c','?')} edge")
+    except Exception:
+        pass
+
+    return '\n'.join(lines) if lines else "Tidak ada data konteks yang berhasil diambil."
+
+
+@app.post("/api/datasets/{dataset_id}/chat")
+def dataset_chat(dataset_id: str, req: ChatRequest):
+    get_dataset(dataset_id)
+    import os, requests as _req
+    api_key = os.environ.get("DINOIKI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
+
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '15s'")
+        ctx = _gather_chat_context(connection, req.question)
+        entity_ctx = _entity_lookup(connection, req.question)
+        if entity_ctx:
+            ctx = ctx + '\n' + entity_ctx
+    except Exception:
+        ctx = "Konteks tidak berhasil diambil."
+    finally:
+        connection.close()
+
+    system_msg = _build_chat_system_prompt(req.question, ctx)
+
+    messages = [{"role": "system", "content": system_msg}]
+    for h in (req.history or [])[-10:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": req.question})
+
+    def _stream():
+        try:
+            resp = _req.post(
+                _DINOIKI_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": "gpt-4o", "messages": messages, "max_tokens": 2048, "temperature": 0.3, "stream": True},
+                stream=True, timeout=120,
+            )
+            if not resp.ok:
+                yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                ps = line[5:].strip()
+                if ps == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(ps)
+                    text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                    if text:
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+                except Exception:
+                    pass
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class NodeChatRequest(BaseModel):
+    node_id: str
+    question: str
+    history: list = []
+
+
+def _build_node_context(connection, node_id: str) -> str:
+    """Bangun konteks lengkap untuk satu node: properties + semua relasi langsung + domain record."""
+    lines = []
+
+    # Data node utama
+    node = rows(connection, "SELECT * FROM kg_node WHERE node_id = %s", [node_id])
+    if not node:
+        return "Node tidak ditemukan."
+    n = node[0]
+    props = n.get('properties_json') or {}
+    lines.append(f"=== NODE UTAMA ===")
+    lines.append(f"ID: {n['node_id']}")
+    lines.append(f"Tipe: {n['node_type']}")
+    lines.append(f"Label: {n['label']}")
+    lines.append(f"Business Key: {n['business_key']}")
+    if props:
+        lines.append("Properties:")
+        for k, v in props.items():
+            if v is not None and str(v).strip() not in ('', '0', 'None', 'false'):
+                lines.append(f"  {k}: {v}")
+
+    # Domain record tambahan (jika ada)
+    try:
+        dr = rows(connection, "SELECT * FROM domain_record WHERE node_id = %s LIMIT 1", [node_id])
+        if dr:
+            domain_props = {k: v for k, v in dict(dr[0]).items()
+                           if k not in ('node_id', 'dataset_id', 'id') and v is not None and str(v).strip() not in ('', 'None')}
+            if domain_props:
+                lines.append("Domain record tambahan:")
+                for k, v in domain_props.items():
+                    lines.append(f"  {k}: {v}")
+    except Exception:
+        pass
+
+    # Semua relasi keluar (source = node ini)
+    try:
+        out_rels = rows(connection, """
+            SELECT r.relationship_type, r.relationship_id,
+                   t.node_id AS target_id, t.node_type AS target_type,
+                   t.label AS target_label, t.business_key AS target_key,
+                   t.properties_json AS target_props
+            FROM kg_relationship r
+            JOIN kg_node t ON t.node_id = r.target_node_id
+            WHERE r.source_node_id = %s AND NOT r.is_candidate
+            LIMIT 50
+        """, [node_id])
+        if out_rels:
+            lines.append(f"\n=== RELASI KELUAR ({len(out_rels)}) ===")
+            for r_ in out_rels:
+                tp = r_.get('target_props') or {}
+                # Ambil field paling informatif
+                detail_fields = ['status', 'derived_is_open_order', 'derived_status_bucket',
+                                 'mtbf', 'mttr', 'failure_mode', 'status_optimasi', 'model_name',
+                                 'type_pekerjaan', 'due_year', 'plan_year', 'order_type',
+                                 'derived_planned_cost', 'derived_is_delayed', 'derived_is_top_risk',
+                                 'notification_type', 'description', 'resume_kondisi']
+                detail_parts = []
+                for fld in detail_fields:
+                    val = tp.get(fld)
+                    if val and str(val).strip() not in ('', 'None', 'false', '0'):
+                        label = fld.replace('derived_', '').replace('_', ' ')
+                        detail_parts.append(f"{label}={val}")
+                detail = f" [{', '.join(detail_parts[:6])}]" if detail_parts else ''
+                lines.append(f"  → {r_['relationship_type']} | {r_['target_type']}: {r_['target_label']} ({r_['target_key']}){detail}")
+    except Exception:
+        pass
+
+    # Relasi masuk (target = node ini) — siapa yang referensikan node ini
+    try:
+        in_rels = rows(connection, """
+            SELECT r.relationship_type, s.node_type AS src_type,
+                   s.label AS src_label, s.business_key AS src_key
+            FROM kg_relationship r
+            JOIN kg_node s ON s.node_id = r.source_node_id
+            WHERE r.target_node_id = %s AND NOT r.is_candidate
+            LIMIT 20
+        """, [node_id])
+        if in_rels:
+            lines.append(f"\n=== DIREFERENSIKAN OLEH ({len(in_rels)}) ===")
+            for r_ in in_rels:
+                lines.append(f"  ← {r_['relationship_type']} | {r_['src_type']}: {r_['src_label']} ({r_['src_key']})")
+    except Exception:
+        pass
+
+    # === POSISI NODE DALAM GRAPH (KG-specific insight) ===
+    try:
+        # Degree dan domain coverage node ini
+        degree_row = rows(connection, """
+            SELECT count(*) AS out_degree, count(DISTINCT relationship_type) AS domain_count,
+                   string_agg(DISTINCT relationship_type, ', ' ORDER BY relationship_type) AS connected_domains
+            FROM kg_relationship WHERE source_node_id = %s AND NOT is_candidate
+        """, [node_id])
+        if degree_row:
+            d = degree_row[0]
+            lines.append(f"\n=== POSISI DALAM GRAPH ===")
+            lines.append(f"Out-degree (jumlah koneksi keluar): {d.get('out_degree',0)}")
+            lines.append(f"Domain terhubung ({d.get('domain_count',0)}): {d.get('connected_domains') or 'tidak ada'}")
+            # Bandingkan dengan rata-rata equipment di RU yang sama
+            ru_val = props.get('refinery_unit', '')
+            if ru_val and n['node_type'] == 'equipment':
+                avg_row = rows(connection, """
+                    SELECT avg(deg) AS avg_deg FROM (
+                        SELECT count(r.relationship_id) AS deg
+                        FROM kg_node n2
+                        LEFT JOIN kg_relationship r ON r.source_node_id=n2.node_id AND NOT r.is_candidate
+                        WHERE n2.node_type='equipment' AND n2.properties_json->>'refinery_unit' ILIKE %s
+                        GROUP BY n2.node_id
+                    ) sub
+                """, [f'%{ru_val}%'])
+                if avg_row and avg_row[0].get('avg_deg'):
+                    avg_deg = round(float(avg_row[0]['avg_deg']), 1)
+                    own_deg = int(d.get('out_degree') or 0)
+                    if own_deg == 0:
+                        lines.append(f"⚠ Node ini TERISOLASI — tidak terhubung ke domain apapun (rata-rata equipment di RU ini: {avg_deg} koneksi). Ini adalah data gap serius.")
+                    elif own_deg > avg_deg * 2:
+                        lines.append(f"★ Node ini adalah HUB — koneksi ({own_deg}) jauh di atas rata-rata equipment di RU ini ({avg_deg}). Titik kritis dalam jaringan.")
+                    elif own_deg < avg_deg * 0.5:
+                        lines.append(f"↓ Koneksi node ini ({own_deg}) di bawah rata-rata equipment di RU ini ({avg_deg}). Coverage data terbatas.")
+                    else:
+                        lines.append(f"Koneksi node ini ({own_deg}) mendekati rata-rata equipment di RU ini ({avg_deg}).")
+    except Exception:
+        pass
+
+    # 2-hop: domain apa yang bisa dicapai lewat 2 lompatan (misalnya: equipment → WO → material)
+    try:
+        two_hop = rows(connection, """
+            SELECT DISTINCT t2.node_type AS hop2_type, count(*) AS c
+            FROM kg_relationship r1
+            JOIN kg_node mid ON mid.node_id = r1.target_node_id
+            JOIN kg_relationship r2 ON r2.source_node_id = mid.node_id AND NOT r2.is_candidate
+            JOIN kg_node t2 ON t2.node_id = r2.target_node_id
+            WHERE r1.source_node_id = %s AND NOT r1.is_candidate
+              AND t2.node_id != %s
+            GROUP BY t2.node_type ORDER BY c DESC LIMIT 8
+        """, [node_id, node_id])
+        if two_hop:
+            lines.append(f"\n2-hop reachability (entitas yang terhubung lewat 2 lompatan relasi):")
+            for r_ in two_hop:
+                lines.append(f"  → {r_.get('hop2_type','?')}: {r_.get('c','?')} node")
+    except Exception:
+        pass
+
+    return '\n'.join(lines)
+
+
+@app.post("/api/datasets/{dataset_id}/node-chat")
+def node_chat(dataset_id: str, req: NodeChatRequest):
+    get_dataset(dataset_id)
+    import os, requests as _req
+    api_key = os.environ.get("DINOIKI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
+
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '15s'")
+        node_ctx = _build_node_context(connection, req.node_id)
+    except Exception as exc:
+        node_ctx = f"Gagal memuat data node: {exc}"
+    finally:
+        connection.close()
+
+    system_msg = (
+        f"{_CHAT_SYSTEM_PROMPT}\n"
+        f"User sedang menganalisis satu entitas spesifik dalam knowledge graph.\n"
+        f"Interpretasi posisi entitas (hub/isolated/normal), baca relasi sebagai konteks operasional,\n"
+        f"gunakan 2-hop reachability untuk dampak tidak langsung, dan sebutkan domain yang TIDAK terhubung sebagai blind spot.\n\n"
+        f"=== DATA ENTITAS ===\n{node_ctx}"
+    )
+
+    messages = [{"role": "system", "content": system_msg}]
+    for h in (req.history or [])[-10:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": req.question})
+
+    def _stream():
+        try:
+            resp = _req.post(
+                _DINOIKI_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": "gpt-4o", "messages": messages, "max_tokens": 2048, "temperature": 0.3, "stream": True},
+                stream=True, timeout=120,
+            )
+            if not resp.ok:
+                yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                ps = line[5:].strip()
+                if ps == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(ps)
+                    text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                    if text:
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+                except Exception:
+                    pass
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 DIST = Path(__file__).resolve().parents[1] / "dist"
 if DIST.exists():
     app.mount("/", StaticFiles(directory=DIST, html=True), name="artifact")

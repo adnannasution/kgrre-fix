@@ -218,3 +218,69 @@ export async function streamDiagnosis(
     }
   }
 }
+
+export async function streamChat(
+  datasetId: string,
+  question: string,
+  history: { role: 'user' | 'assistant'; content: string }[],
+  onChunk: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API}/datasets/${datasetId}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, history }),
+    signal,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || 'Gagal menghubungi server.')
+  }
+  await _readSSEStream(res, onChunk)
+}
+
+export async function streamNodeChat(
+  datasetId: string,
+  nodeId: string,
+  question: string,
+  history: { role: 'user' | 'assistant'; content: string }[],
+  onChunk: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API}/datasets/${datasetId}/node-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId, question, history }),
+    signal,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || 'Gagal menghubungi server.')
+  }
+  await _readSSEStream(res, onChunk)
+}
+
+async function _readSSEStream(res: Response, onChunk: (text: string) => void): Promise<void> {
+  const reader = res.body!.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        const parsed = JSON.parse(payload) as { text?: string; error?: string }
+        if (parsed.error) throw new Error(parsed.error)
+        if (parsed.text) onChunk(parsed.text)
+      } catch (e) {
+        if (e instanceof Error && e.message) throw e
+      }
+    }
+  }
+}
