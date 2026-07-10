@@ -3907,6 +3907,15 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
 
   return (
     <div className="chatbot-page">
+      <div className="chatbot-topbar">
+        <div className="chatbot-topbar-left">
+          <span className="chatbot-topbar-eyebrow">{dataset ? dataset.mode.replaceAll('_', ' ') : 'knowledge graph'}</span>
+          <h1 className="chatbot-topbar-title">Tanya AI</h1>
+        </div>
+        <div className="chatbot-topbar-right">
+          <div className="privacy"><span>●</span> Tersimpan di PostgreSQL (Railway)</div>
+        </div>
+      </div>
       <div className="chatbot-messages">
         {messages.length === 0 && (
           <div className="chatbot-welcome">
