@@ -2920,6 +2920,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   critical_equipment:      'Critical Equipment',
   metering:                'Metering',
   inspection_plan:         'Inspection Plan',
+  ppms:                    'PPMS',
   monitoring_operasi:      'Monitoring Operasi',
   rotor:                   'Rotor',
   atg:                     'ATG',

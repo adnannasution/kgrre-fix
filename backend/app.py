@@ -417,6 +417,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 ('power_steam',             'EQUIPMENT_HAS_POWER_STEAM',             'equipment_raw'),
                 ('metering',               'EQUIPMENT_HAS_METERING',               'equipment_raw'),
                 ('inspection_plan',        'EQUIPMENT_HAS_INSPECTION_PLAN',        'equipment_raw'),
+                ('ppms',                   'EQUIPMENT_HAS_PPMS',                   'equipment_raw'),
             ]:
                 connection.execute(f"""
                     INSERT INTO kg_relationship
@@ -1863,6 +1864,7 @@ _ALWAYS_SHOW_DOMAINS: list[tuple[str, str, str]] = [
     ('zero_clamp',       'EQUIPMENT_HAS_ZERO_CLAMP',       'equipment_raw'),
     ('metering',         'EQUIPMENT_HAS_METERING',         'equipment_raw'),
     ('inspection_plan',  'EQUIPMENT_HAS_INSPECTION_PLAN',  'equipment_raw'),
+    ('ppms',             'EQUIPMENT_HAS_PPMS',             'equipment_raw'),
 ]
 
 
