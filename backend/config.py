@@ -146,7 +146,7 @@ def delete_dataset(dataset_id: str) -> None:
 def reset_all() -> dict:
     """Hapus semua dataset dan seluruh data — kembali ke kondisi kosong."""
     with connection() as conn:
-        for table in _DATA_TABLES:
-            conn.execute(f"TRUNCATE {table}")
-        conn.execute("TRUNCATE dataset_catalog")
+        conn.execute("SET LOCAL lock_timeout = '10s'")
+        all_tables = ", ".join(_DATA_TABLES) + ", dataset_catalog"
+        conn.execute(f"TRUNCATE {all_tables}")
     return {"ok": True}
