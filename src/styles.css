@@ -890,3 +890,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
   .nodechat-page { grid-template-columns: 1fr; grid-template-rows: 240px 1fr; }
   .nodechat-sidebar { border-right: none; border-bottom: 1px solid var(--line); }
 }
+
+/* Role selector tabs */
+.chatbot-role-tabs { display: flex; gap: 6px; margin: 8px 0 4px; }
+.chatbot-role-tab { padding: 6px 14px; border: 1px solid var(--line); border-radius: 20px; background: transparent; color: var(--muted); cursor: pointer; font-size: var(--fs-xs); font-weight: 600; transition: all 0.15s; }
+.chatbot-role-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.chatbot-role-tab:hover:not(.active) { background: var(--panel-2); color: var(--text); }
+.chatbot-role-desc { font-size: var(--fs-xs); color: var(--muted); margin: 0 0 12px; }
+.chatbot-role-mini { display: flex; gap: 4px; flex-shrink: 0; }
+.chatbot-role-mini-btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.chatbot-role-mini-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
