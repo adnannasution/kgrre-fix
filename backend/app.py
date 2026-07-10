@@ -4422,6 +4422,108 @@ class ChatRequest(BaseModel):
     history: list = []   # [{role, content}]
 
 
+def _props_to_text(props: dict) -> str:
+    """Ubah properties_json dict menjadi teks ringkas untuk konteks AI."""
+    skip = {'node_id', 'dataset_id'}
+    parts = []
+    for k, v in props.items():
+        if k in skip or v is None or str(v).strip() in ('', '0', 'None'):
+            continue
+        parts.append(f"{k}: {v}")
+    return ', '.join(parts[:30])  # max 30 field agar tidak terlalu panjang
+
+
+def _entity_lookup(connection, question: str) -> str:
+    """Cari entitas spesifik (equipment/node) yang disebut di pertanyaan dan ambil detail propertinya."""
+    import re
+    lines = []
+
+    # Token kandidat: kata 2+ karakter, angka-huruf (kode equipment), atau frasa dalam kutip
+    tokens = re.findall(r'"([^"]+)"|\'([^\']+)\'|([A-Z0-9][A-Z0-9\-\/]{2,})', question.upper())
+    # Juga ekstrak kata bermakna panjang (bukan stopword umum)
+    stopwords = {'APA', 'YANG', 'DAN', 'DARI', 'UNTUK', 'PADA', 'DENGAN', 'DI', 'INI',
+                 'ITU', 'ADALAH', 'BERAPA', 'BAGAIMANA', 'DIMANA', 'KAPAN', 'SIAPA',
+                 'STATUS', 'DATA', 'DETAIL', 'INFO', 'LIST', 'SEMUA', 'TOTAL', 'JUMLAH'}
+    candidates = set()
+    for t in tokens:
+        word = (t[0] or t[1] or t[2]).strip()
+        if word and word not in stopwords and len(word) >= 3:
+            candidates.add(word)
+
+    # Juga cari kata-kata panjang dari pertanyaan asli (nama equipment biasanya unik)
+    for word in re.findall(r'\b\w{4,}\b', question):
+        upper = word.upper()
+        if upper not in stopwords and not upper.startswith('PPMS') and len(upper) >= 4:
+            candidates.add(upper)
+
+    if not candidates:
+        return ''
+
+    found_nodes = []
+    for candidate in list(candidates)[:8]:  # max 8 token dicari
+        try:
+            hits = rows(connection, """
+                SELECT node_id, node_type, label, business_key, properties_json
+                FROM kg_node
+                WHERE lower(label) LIKE lower(%s)
+                   OR lower(business_key) LIKE lower(%s)
+                   OR lower(node_id) LIKE lower(%s)
+                LIMIT 3
+            """, [f'%{candidate}%', f'%{candidate}%', f'%{candidate}%'])
+            found_nodes.extend(hits)
+        except Exception:
+            pass
+
+    if not found_nodes:
+        return ''
+
+    # Deduplikasi by node_id
+    seen = set()
+    unique_nodes = []
+    for n in found_nodes:
+        if n['node_id'] not in seen:
+            seen.add(n['node_id'])
+            unique_nodes.append(n)
+
+    lines.append(f"\n=== ENTITAS SPESIFIK YANG DITEMUKAN ({len(unique_nodes)} node) ===")
+    for n in unique_nodes[:6]:
+        props = n.get('properties_json') or {}
+        lines.append(f"\n[{n['node_type']}] {n['label']} (ID: {n['business_key']})")
+        props_text = _props_to_text(props)
+        if props_text:
+            lines.append(f"  Properties: {props_text}")
+        # Ambil relasi langsung node ini
+        try:
+            rels = rows(connection, """
+                SELECT r.relationship_type, t.label, t.node_type, t.business_key,
+                       t.properties_json->>'status' AS status,
+                       t.properties_json->>'derived_is_open_order' AS open_order,
+                       t.properties_json->>'derived_status_bucket' AS status_bucket,
+                       t.properties_json->>'mtbf' AS mtbf,
+                       t.properties_json->>'failure_mode' AS failure_mode,
+                       t.properties_json->>'status_optimasi' AS status_optimasi,
+                       t.properties_json->>'type_pekerjaan' AS type_pekerjaan
+                FROM kg_relationship r
+                JOIN kg_node t ON t.node_id = r.target_node_id
+                WHERE r.source_node_id = %s AND NOT r.is_candidate
+                LIMIT 20
+            """, [n['node_id']])
+            if rels:
+                lines.append(f"  Relasi langsung ({len(rels)}):")
+                for r_ in rels:
+                    detail_parts = []
+                    for fld in ('status', 'open_order', 'status_bucket', 'mtbf', 'failure_mode', 'status_optimasi', 'type_pekerjaan'):
+                        val = r_.get(fld)
+                        if val and str(val).strip() not in ('', 'None', 'false'):
+                            detail_parts.append(f"{fld}={val}")
+                    detail = f" [{', '.join(detail_parts)}]" if detail_parts else ''
+                    lines.append(f"    - {r_['relationship_type']} → {r_['node_type']}: {r_['label']} ({r_['business_key']}){detail}")
+        except Exception:
+            pass
+
+    return '\n'.join(lines)
+
+
 def _gather_chat_context(connection, question: str) -> str:
     """Kumpulkan fakta relevan dari KG berdasarkan kata kunci di pertanyaan."""
     import re
@@ -4594,6 +4696,9 @@ def dataset_chat(dataset_id: str, req: ChatRequest):
     try:
         connection.execute("SET LOCAL statement_timeout = '15s'")
         ctx = _gather_chat_context(connection, req.question)
+        entity_ctx = _entity_lookup(connection, req.question)
+        if entity_ctx:
+            ctx = ctx + '\n' + entity_ctx
     except Exception:
         ctx = "Konteks tidak berhasil diambil."
     finally:
