@@ -133,14 +133,16 @@ def _select_ready_files(scan: dict, allow_partial: bool) -> list[dict]:
 def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_package: bool,
                 existing_dataset_id: str | None = None, append: bool = False) -> None:
     is_sync = existing_dataset_id is not None
-    dataset_id = existing_dataset_id if is_sync else uuid.uuid4().hex
-    if is_sync and not append:
-        # Sync biasa = timpa: hapus seluruh isi dataset dulu.
-        _drop_dataset_data(dataset_id)
-    elif is_sync and append:
-        # Mode tambah: pertahankan node/relasi lama (dedupe via ON CONFLICT),
-        # hanya bersihkan tabel dashboard/audit agar tidak menumpuk ganda.
-        _clear_dashboard_data(dataset_id)
+    # Untuk sync non-append: import ke dataset_id sementara dulu agar data lama
+    # tidak hilang jika import gagal. Setelah sukses, data lama dihapus dan data
+    # baru di-rename ke dataset_id asli. Kalau gagal, tmp dihapus & data asli aman.
+    final_dataset_id = existing_dataset_id if is_sync else uuid.uuid4().hex
+    ingest_id = uuid.uuid4().hex if (is_sync and not append) else final_dataset_id
+
+    if is_sync and append:
+        # Mode tambah: pertahankan node/relasi lama, hanya bersihkan tabel dashboard.
+        _clear_dashboard_data(final_dataset_id)
+
     try:
         job.status = "running"
         job.phase = "Fingerprint"
@@ -149,7 +151,7 @@ def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_
 
         # autocommit=True: tiap langkah ingest langsung commit agar server tidak
         # menahan satu transaksi raksasa (penyebab koneksi diputus saat file ~1 GB).
-        with scoped(dataset_id, autocommit=True) as connection:
+        with scoped(ingest_id, autocommit=True) as connection:
             initialize(connection)
             enable_rls(connection)
             _register_source_files(connection, fingerprints)
@@ -183,39 +185,46 @@ def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_
                 "(SELECT count(*) FROM import_issue)"
             )
 
-            if is_sync:
-                workbooks = [item["name"] for item in fingerprints]
-                if append:
-                    # Gabungkan daftar file lama + baru (dedupe, pertahankan urutan)
-                    from .config import get_dataset_row
-                    existing_row = get_dataset_row(dataset_id) or {}
-                    merged = list(existing_row.get("workbooks") or [])
-                    for wb in workbooks:
-                        if wb not in merged:
-                            merged.append(wb)
-                    workbooks = merged
-                update_dataset_counts(
-                    dataset_id, counts[0], counts[1], counts[2], workbooks,
-                )
-            else:
-                insert_dataset({
-                    "id": dataset_id,
-                    "name": job.name,
-                    "mode": "etl_csv_graph",
-                    "node_count": counts[0],
-                    "edge_count": counts[1],
-                    "issue_count": counts[2],
-                    "workbooks": [item["name"] for item in fingerprints],
-                    "uploaded_package": uploaded_package,
-                })
+        # Import berhasil — sekarang aman untuk mengganti data lama.
+        if is_sync and not append:
+            # Hapus data lama, lalu pindahkan data baru (ingest_id → final_dataset_id).
+            job.phase = "Aktivasi"
+            _drop_dataset_data(final_dataset_id)
+            _rename_dataset_data(ingest_id, final_dataset_id)
 
-        job.dataset_id = dataset_id
+        workbooks = [item["name"] for item in fingerprints]
+        if is_sync:
+            if append:
+                from .config import get_dataset_row
+                existing_row = get_dataset_row(final_dataset_id) or {}
+                merged = list(existing_row.get("workbooks") or [])
+                for wb in workbooks:
+                    if wb not in merged:
+                        merged.append(wb)
+                workbooks = merged
+            update_dataset_counts(
+                final_dataset_id, counts[0], counts[1], counts[2], workbooks,
+            )
+        else:
+            insert_dataset({
+                "id": final_dataset_id,
+                "name": job.name,
+                "mode": "etl_csv_graph",
+                "node_count": counts[0],
+                "edge_count": counts[1],
+                "issue_count": counts[2],
+                "workbooks": workbooks,
+                "uploaded_package": uploaded_package,
+            })
+
+        job.dataset_id = final_dataset_id
         job.progress = 100
         job.phase = "Selesai"
         job.message = f"{counts[0]:,} node dan {counts[1]:,} relationship tersedia."
         job.status = "completed"
     except Exception as exc:
-        _drop_dataset_data(dataset_id)
+        # Hapus data ingest sementara; data asli (final_dataset_id) tidak tersentuh.
+        _drop_dataset_data(ingest_id)
         job.status = "cancelled" if job.cancelled else "failed"
         job.error = str(exc)
         job.message = str(exc)
@@ -224,7 +233,7 @@ def _run_import(job: ImportJob, files: list[dict], package_root: Path, uploaded_
 
 
 def _drop_dataset_data(dataset_id: str) -> None:
-    """Bersihkan partial import yang gagal (RLS membatasi DELETE ke dataset ini)."""
+    """Bersihkan data dataset (RLS membatasi DELETE ke dataset ini)."""
     try:
         with scoped(dataset_id) as conn:
             for table in (
@@ -234,6 +243,24 @@ def _drop_dataset_data(dataset_id: str) -> None:
                 conn.execute(f"DELETE FROM {table}")
     except Exception:
         pass
+
+
+def _rename_dataset_data(src_id: str, dst_id: str) -> None:
+    """Pindahkan semua baris dari src_id ke dst_id (UPDATE dataset_id).
+    Dipakai setelah sync berhasil: data ingest sementara di-swap ke dataset_id asli."""
+    tables = (
+        "kg_node", "kg_relationship", "domain_record", "kg_identifier",
+        "import_issue", "load_summary", "graph_analysis", "source_file",
+    )
+    # RLS tidak bisa dipakai di sini karena kita menulis ke dst_id yang berbeda.
+    # Gunakan koneksi pool langsung (tanpa scoped) dan filter WHERE manual.
+    from .database import pool
+    with pool().connection() as conn:
+        for table in tables:
+            conn.execute(
+                f"UPDATE {table} SET dataset_id = %s WHERE dataset_id = %s",
+                [dst_id, src_id],
+            )
 
 
 def _clear_dashboard_data(dataset_id: str) -> None:
