@@ -94,6 +94,12 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('status_metering') and has('cert_no_metering', 'date_expired_metering'):
         return 'metering'
 
+    # Inspection Plan — due_year + plan_year + type_pekerjaan (kombinasi unik, cek SEBELUM zero_clamp)
+    if has('due_year', 'plan_year') and has('type_pekerjaan') and has('equipment', 'tag_no_ln'):
+        return 'inspection_plan'
+    if has('due_date') and has('plan_date') and has('grand_result') and has('equipment', 'tag_no_ln'):
+        return 'inspection_plan'
+
     # Zero Clamp — tag_no_ln atau type_damage + type_perbaikan
     if has('tag_no_ln') or (has('type_damage') and has('type_perbaikan', 'tanggal_dipasang')):
         return 'zero_clamp'
@@ -1066,6 +1072,77 @@ def _build_inspection_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) ->
                json_object('match_token', equipment_raw),
                source_file, source_sheet, source_row, source_record_id
         FROM inspection_stage WHERE equipment_id IS NOT NULL AND inspection_id IS NOT NULL
+    """)
+
+
+def _build_inspection_plan_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
+    if not views:
+        return
+    c = _union_cols(con, views)
+    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
+    eq_expr = _cs(c, 'equipment', 'tag_no_ln', 'tag_number', 'tag_no')
+    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit', 'ru', 'plant', default='NULL')})"
+    con.execute(f"""
+        CREATE TABLE inspection_plan_stage AS
+        SELECT
+            {eq_expr} AS equipment_raw,
+            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            {_cs(c, 'type_inspection', 'jenis_inspeksi')} AS type_inspection,
+            {_cs(c, 'type_pekerjaan', 'jenis_pekerjaan')} AS type_pekerjaan,
+            {_cs(c, 'due_date', cast=True)} AS due_date,
+            {_cs(c, 'plan_date', cast=True)} AS plan_date,
+            {_cs(c, 'actual_date', cast=True)} AS actual_date,
+            {_cs(c, 'grand_result', 'result')} AS grand_result,
+            {_cs(c, 'periode', 'period', default="''")} AS periode,
+            _input_source_file AS source_file,
+            _input_source_sheet AS source_sheet,
+            _source_row AS source_row,
+            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
+        FROM ({union_sql})
+        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
+    """)
+
+    con.execute("""
+        ALTER TABLE inspection_plan_stage ADD COLUMN plan_id VARCHAR;
+        UPDATE inspection_plan_stage
+        SET plan_id = 'node_inspection_plan_' || md5(source_record_id);
+
+        ALTER TABLE inspection_plan_stage ADD COLUMN equipment_id VARCHAR;
+        UPDATE inspection_plan_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE inspection_plan_stage.refinery_unit = e.refinery_unit
+          AND norm_code(inspection_plan_stage.equipment_raw) = norm_code(e.equipment_code_clean);
+    """)
+
+    con.execute("""
+        INSERT INTO node_raw
+        SELECT plan_id, 'inspection_plan', source_record_id,
+               coalesce(nullif(type_inspection, ''), 'Inspection Plan'), 'inspection_plan',
+               json_object(
+                   'refinery_unit', refinery_unit,
+                   'equipment_raw', equipment_raw,
+                   'type_inspection', type_inspection,
+                   'type_pekerjaan', type_pekerjaan,
+                   'due_date', cast(due_date AS VARCHAR),
+                   'plan_date', cast(plan_date AS VARCHAR),
+                   'actual_date', cast(actual_date AS VARCHAR),
+                   'grand_result', grand_result,
+                   'periode', periode
+               ),
+               source_file, source_sheet, source_row, source_record_id
+        FROM inspection_plan_stage WHERE plan_id IS NOT NULL
+    """)
+
+    con.execute("""
+        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
+            domain, confidence, match_rule, is_candidate, properties_json,
+            source_file, source_sheet, source_row, source_record_id)
+        SELECT equipment_id, plan_id, 'EQUIPMENT_HAS_INSPECTION_PLAN',
+               'inspection_plan', 1.0, 'ru_and_equipment_exact', false,
+               json_object('match_token', equipment_raw),
+               source_file, source_sheet, source_row, source_record_id
+        FROM inspection_plan_stage
+        WHERE equipment_id IS NOT NULL AND plan_id IS NOT NULL
     """)
 
 
@@ -3049,6 +3126,7 @@ def _write_outputs(con: duckdb.DuckDBPyConnection, out_dir: Path) -> dict[str, i
         ('oa', 'oa_availability', 'domain_oa_availability.csv'),
         ('oa', 'oa_issue', 'domain_oa_issue.csv'),
         ('plo', 'plo_permit', 'domain_plo_permit.csv'),
+        ('inspection_plan', 'inspection_plan', 'domain_inspection_plan.csv'),
     ]:
         con.execute(f"""
             COPY (
@@ -3105,6 +3183,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
             "spm_workplan": [], "tank_workplan": [], "jetty_workplan": [],
             "readiness_tank": [], "readiness_jetty": [], "readiness_spm": [],
             "metering": [],
+            "inspection_plan": [],
         }
 
         job.phase = "Membaca sheet Excel"
@@ -3159,6 +3238,7 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         job.progress = 62
         job.phase = "Membangun node Inspection"
         _safe("Inspection", _build_inspection_nodes, con, domain_views["inspection"])
+        _safe("Inspection Plan", _build_inspection_plan_nodes, con, domain_views["inspection_plan"])
 
         job.progress = 68
         job.phase = "Membangun node ICU/Org Issue"
