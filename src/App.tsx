@@ -2506,6 +2506,8 @@ function DataReview({ dataset }: { dataset?: DatasetSummary }) {
 function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll }: { datasets: DatasetSummary[]; activeId: string; onActivate: (id: string) => void; onRefresh: () => Promise<void>; onResetAll: () => void }) {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
+  const [recovering, setRecovering] = useState(false)
+  const [recoverMsg, setRecoverMsg] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
   const [fileLoading, setFileLoading] = useState<string | null>(null)
@@ -2690,7 +2692,34 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
         </div>
       </div>
 
-      {!datasets.length && <NoDataset />}
+      {!datasets.length && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '32px 0' }}>
+          <NoDataset />
+          <button
+            className="primary"
+            disabled={recovering}
+            onClick={async () => {
+              setRecovering(true)
+              setRecoverMsg('')
+              try {
+                const res = await fetch('/api/recover-datasets', { method: 'POST' })
+                const data = await res.json()
+                if (data.count > 0) {
+                  setRecoverMsg(`Berhasil memulihkan ${data.count} dataset.`)
+                  await onRefresh()
+                } else {
+                  setRecoverMsg('Tidak ada data yang bisa dipulihkan di database.')
+                }
+              } catch {
+                setRecoverMsg('Gagal menghubungi server.')
+              } finally {
+                setRecovering(false)
+              }
+            }}
+          >{recovering ? 'Memeriksa database…' : 'Pulihkan dataset dari database'}</button>
+          {recoverMsg && <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</p>}
+        </div>
+      )}
 
       {datasets.length > 0 && (
         <div className="dm-table-wrap">

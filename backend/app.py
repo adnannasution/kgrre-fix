@@ -647,6 +647,49 @@ def reset_all():
     return _reset_all()
 
 
+@app.post("/api/recover-datasets")
+def recover_datasets():
+    """Pulihkan entri dataset_catalog dari data yang masih ada di kg_node.
+    Aman dijalankan berulang kali (INSERT ON CONFLICT DO NOTHING).
+    Gunakan jika dataset_catalog kosong tapi data kg_node masih ada."""
+    ensure_schema_once()
+    from .database import fetch_tuple
+    recovered = []
+    with connection() as conn:
+        # Temukan semua dataset_id di kg_node yang tidak ada di catalog
+        orphans = conn.execute("""
+            SELECT DISTINCT n.dataset_id
+            FROM kg_node n
+            WHERE NOT EXISTS (
+                SELECT 1 FROM dataset_catalog dc WHERE dc.id = n.dataset_id
+            )
+        """).fetchall()
+        for row in orphans:
+            did = row["dataset_id"]
+            with conn.cursor() as cur:
+                from psycopg.rows import tuple_row
+                cur.row_factory = tuple_row
+                cur.execute(
+                    "SELECT count(*) FROM kg_node WHERE dataset_id = %s", [did]
+                )
+                nc = (cur.fetchone() or (0,))[0]
+                cur.execute(
+                    "SELECT count(*) FROM kg_relationship WHERE dataset_id = %s", [did]
+                )
+                ec = (cur.fetchone() or (0,))[0]
+            conn.execute(
+                """
+                INSERT INTO dataset_catalog (id, name, mode, node_count, edge_count,
+                    issue_count, workbooks, uploaded_package)
+                VALUES (%s, %s, 'etl_csv_graph', %s, %s, 0, '[]'::jsonb, false)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                [did, f"Dataset Recovered ({nc:,} nodes)", nc, ec],
+            )
+            recovered.append({"dataset_id": did, "node_count": nc, "edge_count": ec})
+    return {"recovered": recovered, "count": len(recovered)}
+
+
 @app.get("/api/datasets/{dataset_id}/load-summary")
 def load_summary_endpoint(dataset_id: str):
     get_dataset(dataset_id)
