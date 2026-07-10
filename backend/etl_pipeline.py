@@ -94,8 +94,9 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('status_metering') and has('cert_no_metering', 'date_expired_metering'):
         return 'metering'
 
-    # Inspection Plan — type_inspection + due_date/plan_date + tag_no_ln sangat spesifik
-    if has('type_inspection') and has('due_date', 'plan_date', 'due_year') and has('tag_no_ln', 'equipment'):
+    # Inspection Plan — type_inspection + date plan + tag_no_ln sangat spesifik
+    # Harus ada tag_no_ln (bukan hanya 'equipment') agar tidak bentrok dengan file inspection biasa
+    if has('type_inspection') and has('due_date', 'plan_date', 'due_year') and has('tag_no_ln'):
         return 'inspection_plan'
 
     # PPMS (Predictive Maintenance System) — status_optimasi + status_model + resume_kondisi sangat spesifik
