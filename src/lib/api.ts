@@ -236,6 +236,31 @@ export async function streamChat(
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error((err as { detail?: string }).detail || 'Gagal menghubungi server.')
   }
+  await _readSSEStream(res, onChunk)
+}
+
+export async function streamNodeChat(
+  datasetId: string,
+  nodeId: string,
+  question: string,
+  history: { role: 'user' | 'assistant'; content: string }[],
+  onChunk: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API}/datasets/${datasetId}/node-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId, question, history }),
+    signal,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error((err as { detail?: string }).detail || 'Gagal menghubungi server.')
+  }
+  await _readSSEStream(res, onChunk)
+}
+
+async function _readSSEStream(res: Response, onChunk: (text: string) => void): Promise<void> {
   const reader = res.body!.getReader()
   const dec = new TextDecoder()
   let buf = ''

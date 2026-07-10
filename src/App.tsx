@@ -16,7 +16,7 @@ import {
   TrashIcon,
   UploadIcon,
 } from './components/Icons'
-import { api, streamDiagnosis, streamAnalysis, streamChat } from './lib/api'
+import { api, streamDiagnosis, streamAnalysis, streamChat, streamNodeChat } from './lib/api'
 import type {
   DatasetStats,
   DatasetSummary,
@@ -37,7 +37,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage' | 'analisis' | 'chatbot'
+type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage' | 'analisis' | 'chatbot' | 'nodechat'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -265,6 +265,7 @@ export default function App() {
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<SparkleIcon />} label="Tanya AI" active={page === 'chatbot'} onClick={() => setPage('chatbot')} />
+          <Nav icon={<SparkleIcon />} label="Detail AI" active={page === 'nodechat'} onClick={() => setPage('nodechat')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
           <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
@@ -321,6 +322,7 @@ export default function App() {
         {page === 'coverage' && <EquipmentCoveragePage dataset={active} />}
         {page === 'analisis' && <AnalisisPage dataset={active} />}
         {page === 'chatbot' && <ChatbotPage dataset={active} />}
+        {page === 'nodechat' && <NodeChatPage dataset={active} />}
         {page === 'datasets' && (
           <DatasetManager
             datasets={datasets}
@@ -3952,8 +3954,205 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
   )
 }
 
+function NodeChatPage({ dataset }: { dataset?: DatasetSummary }) {
+  const [searchQ, setSearchQ] = useState('')
+  const [searchResults, setSearchResults] = useState<GraphNode[]>([])
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
+  const [nodeDetail, setNodeDetail] = useState<(GraphNode & { domain_record?: Record<string, unknown> }) | null>(null)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [input, setInput] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [loadingNode, setLoadingNode] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+
+  useEffect(() => {
+    if (!dataset || searchQ.length < 2) { setSearchResults([]); return }
+    const t = setTimeout(() => {
+      api.search(dataset.id, searchQ, '', '', 15).then(setSearchResults).catch(() => {})
+    }, 300)
+    return () => clearTimeout(t)
+  }, [searchQ, dataset])
+
+  const pickNode = async (node: GraphNode) => {
+    if (!dataset) return
+    setSelectedNode(node)
+    setSearchResults([])
+    setSearchQ('')
+    setMessages([])
+    setNodeDetail(null)
+    setLoadingNode(true)
+    try {
+      const detail = await api.node(dataset.id, node.id)
+      setNodeDetail(detail)
+    } catch { /* ignore */ } finally {
+      setLoadingNode(false)
+    }
+  }
+
+  const send = async () => {
+    if (!dataset || !selectedNode || !input.trim() || generating) return
+    const q = input.trim()
+    setInput('')
+    const newMessages = [...messages, { role: 'user' as const, content: q }]
+    setMessages(newMessages)
+    setGenerating(true)
+    abortRef.current = new AbortController()
+    let reply = ''
+    setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+    try {
+      await streamNodeChat(
+        dataset.id,
+        selectedNode.id,
+        q,
+        messages.map(m => ({ role: m.role, content: m.content })),
+        (chunk) => {
+          reply += chunk
+          setMessages(prev => {
+            const updated = [...prev]
+            updated[updated.length - 1] = { role: 'assistant', content: reply }
+            return updated
+          })
+        },
+        abortRef.current.signal,
+      )
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        setMessages(prev => {
+          const updated = [...prev]
+          updated[updated.length - 1] = { role: 'assistant', content: reply || '—', error: (e as Error).message }
+          return updated
+        })
+      }
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const stop = () => { abortRef.current?.abort(); setGenerating(false) }
+
+  if (!dataset) return <NoDataset />
+
+  const NODE_SUGGESTIONS = selectedNode ? [
+    'Apa saja relasi langsung node ini?',
+    'Apa status terkini node ini?',
+    'Berikan ringkasan kondisi node ini.',
+    'Ada masalah apa pada node ini?',
+  ] : []
+
+  const props = nodeDetail?.properties ?? {}
+  const propEntries = Object.entries(props).filter(([, v]) => v !== null && String(v).trim() !== '' && String(v) !== '0')
+
+  return (
+    <div className="nodechat-page">
+      {/* Panel kiri: search & info node */}
+      <div className="nodechat-sidebar">
+        <div className="nodechat-search-wrap">
+          <input
+            className="nodechat-search"
+            placeholder="Cari equipment, PPMS, inspection…"
+            value={searchQ}
+            onChange={e => setSearchQ(e.target.value)}
+          />
+          {searchResults.length > 0 && (
+            <div className="nodechat-results">
+              {searchResults.map(n => (
+                <button key={n.id} className="nodechat-result-item" onClick={() => void pickNode(n)}>
+                  <span className="nodechat-result-type">{n.kind}</span>
+                  <span className="nodechat-result-label">{n.label}</span>
+                  <span className="nodechat-result-key">{n.id}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {loadingNode && <div className="nodechat-loading">Memuat detail…</div>}
+
+        {selectedNode && !loadingNode && (
+          <div className="nodechat-detail">
+            <div className="nodechat-detail-header">
+              <span className="nodechat-detail-type">{selectedNode.kind}</span>
+              <span className="nodechat-detail-label">{selectedNode.label}</span>
+              <span className="nodechat-detail-id">{selectedNode.id}</span>
+            </div>
+            {propEntries.length > 0 && (
+              <div className="nodechat-props">
+                {propEntries.map(([k, v]) => (
+                  <div key={k} className="nodechat-prop-row">
+                    <span className="nodechat-prop-key">{k.replace(/_/g, ' ')}</span>
+                    <span className="nodechat-prop-val">{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!selectedNode && !loadingNode && (
+          <div className="nodechat-empty-sidebar">
+            <p>Cari dan pilih node untuk melihat detail dan mulai chat AI tentang node tersebut.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Panel kanan: chat */}
+      <div className="nodechat-chat">
+        <div className="nodechat-messages">
+          {!selectedNode && (
+            <div className="chatbot-welcome">
+              <SparkleIcon style={{ width: 40, height: 40, opacity: 0.25 }} />
+              <p className="chatbot-welcome-title">Pilih node terlebih dahulu</p>
+              <p className="chatbot-welcome-sub">Cari equipment, PPMS, atau node lain di panel kiri, lalu tanya AI tentang node tersebut.</p>
+            </div>
+          )}
+          {selectedNode && messages.length === 0 && (
+            <div className="chatbot-welcome">
+              <SparkleIcon style={{ width: 36, height: 36, opacity: 0.25 }} />
+              <p className="chatbot-welcome-title">Tanya tentang <strong>{selectedNode.label}</strong></p>
+              <div className="chatbot-suggestions">
+                {NODE_SUGGESTIONS.map(s => (
+                  <button key={s} className="chatbot-suggestion" onClick={() => setInput(s)}>{s}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`chatbot-msg chatbot-msg-${msg.role}`}>
+              <div className="chatbot-msg-bubble">
+                <pre className="chatbot-msg-text">{msg.content || (msg.role === 'assistant' && generating ? '…' : '')}</pre>
+                {msg.error && <div className="chatbot-msg-error">⚠ {msg.error}</div>}
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+        <div className="chatbot-input-area">
+          {messages.length > 0 && (
+            <button className="chatbot-clear" onClick={() => setMessages([])}>✕ Baru</button>
+          )}
+          <input
+            className="chatbot-input"
+            placeholder={selectedNode ? `Tanya tentang ${selectedNode.label}…` : 'Pilih node dulu…'}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
+            disabled={!selectedNode || generating}
+          />
+          {generating
+            ? <button className="chatbot-send secondary" onClick={stop}>⏹</button>
+            : <button className="chatbot-send primary" onClick={() => void send()} disabled={!selectedNode || !input.trim()}>Kirim</button>
+          }
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment', analisis: 'Analisis AI', chatbot: 'Tanya AI' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment', analisis: 'Analisis AI', chatbot: 'Tanya AI', nodechat: 'Detail AI' })[page]
 }
 function message(reason: unknown) {
   if (reason instanceof Error) return reason.message

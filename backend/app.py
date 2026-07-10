@@ -4753,6 +4753,165 @@ def dataset_chat(dataset_id: str, req: ChatRequest):
     return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class NodeChatRequest(BaseModel):
+    node_id: str
+    question: str
+    history: list = []
+
+
+def _build_node_context(connection, node_id: str) -> str:
+    """Bangun konteks lengkap untuk satu node: properties + semua relasi langsung + domain record."""
+    lines = []
+
+    # Data node utama
+    node = rows(connection, "SELECT * FROM kg_node WHERE node_id = %s", [node_id])
+    if not node:
+        return "Node tidak ditemukan."
+    n = node[0]
+    props = n.get('properties_json') or {}
+    lines.append(f"=== NODE UTAMA ===")
+    lines.append(f"ID: {n['node_id']}")
+    lines.append(f"Tipe: {n['node_type']}")
+    lines.append(f"Label: {n['label']}")
+    lines.append(f"Business Key: {n['business_key']}")
+    if props:
+        lines.append("Properties:")
+        for k, v in props.items():
+            if v is not None and str(v).strip() not in ('', '0', 'None', 'false'):
+                lines.append(f"  {k}: {v}")
+
+    # Domain record tambahan (jika ada)
+    try:
+        dr = rows(connection, "SELECT * FROM domain_record WHERE node_id = %s LIMIT 1", [node_id])
+        if dr:
+            domain_props = {k: v for k, v in dict(dr[0]).items()
+                           if k not in ('node_id', 'dataset_id', 'id') and v is not None and str(v).strip() not in ('', 'None')}
+            if domain_props:
+                lines.append("Domain record tambahan:")
+                for k, v in domain_props.items():
+                    lines.append(f"  {k}: {v}")
+    except Exception:
+        pass
+
+    # Semua relasi keluar (source = node ini)
+    try:
+        out_rels = rows(connection, """
+            SELECT r.relationship_type, r.relationship_id,
+                   t.node_id AS target_id, t.node_type AS target_type,
+                   t.label AS target_label, t.business_key AS target_key,
+                   t.properties_json AS target_props
+            FROM kg_relationship r
+            JOIN kg_node t ON t.node_id = r.target_node_id
+            WHERE r.source_node_id = %s AND NOT r.is_candidate
+            LIMIT 50
+        """, [node_id])
+        if out_rels:
+            lines.append(f"\n=== RELASI KELUAR ({len(out_rels)}) ===")
+            for r_ in out_rels:
+                tp = r_.get('target_props') or {}
+                # Ambil field paling informatif
+                detail_fields = ['status', 'derived_is_open_order', 'derived_status_bucket',
+                                 'mtbf', 'mttr', 'failure_mode', 'status_optimasi', 'model_name',
+                                 'type_pekerjaan', 'due_year', 'plan_year', 'order_type',
+                                 'derived_planned_cost', 'derived_is_delayed', 'derived_is_top_risk',
+                                 'notification_type', 'description', 'resume_kondisi']
+                detail_parts = []
+                for fld in detail_fields:
+                    val = tp.get(fld)
+                    if val and str(val).strip() not in ('', 'None', 'false', '0'):
+                        label = fld.replace('derived_', '').replace('_', ' ')
+                        detail_parts.append(f"{label}={val}")
+                detail = f" [{', '.join(detail_parts[:6])}]" if detail_parts else ''
+                lines.append(f"  → {r_['relationship_type']} | {r_['target_type']}: {r_['target_label']} ({r_['target_key']}){detail}")
+    except Exception:
+        pass
+
+    # Relasi masuk (target = node ini) — siapa yang referensikan node ini
+    try:
+        in_rels = rows(connection, """
+            SELECT r.relationship_type, s.node_type AS src_type,
+                   s.label AS src_label, s.business_key AS src_key
+            FROM kg_relationship r
+            JOIN kg_node s ON s.node_id = r.source_node_id
+            WHERE r.target_node_id = %s AND NOT r.is_candidate
+            LIMIT 20
+        """, [node_id])
+        if in_rels:
+            lines.append(f"\n=== DIREFERENSIKAN OLEH ({len(in_rels)}) ===")
+            for r_ in in_rels:
+                lines.append(f"  ← {r_['relationship_type']} | {r_['src_type']}: {r_['src_label']} ({r_['src_key']})")
+    except Exception:
+        pass
+
+    return '\n'.join(lines)
+
+
+@app.post("/api/datasets/{dataset_id}/node-chat")
+def node_chat(dataset_id: str, req: NodeChatRequest):
+    get_dataset(dataset_id)
+    import os, requests as _req
+    api_key = os.environ.get("DINOIKI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
+
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '15s'")
+        node_ctx = _build_node_context(connection, req.node_id)
+    except Exception as exc:
+        node_ctx = f"Gagal memuat data node: {exc}"
+    finally:
+        connection.close()
+
+    system_msg = (
+        "Kamu adalah asisten AI untuk sistem knowledge graph kilang minyak (KGRRE). "
+        "User sedang melihat detail sebuah node/entitas dan bertanya tentangnya. "
+        "Jawab berdasarkan data faktual berikut saja. Jangan mengarang. "
+        "Gunakan Bahasa Indonesia. Jika data tidak ada, katakan 'tidak tercatat'.\n\n"
+        f"{node_ctx}"
+    )
+
+    messages = [{"role": "system", "content": system_msg}]
+    for h in (req.history or [])[-10:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": req.question})
+
+    def _stream():
+        try:
+            resp = _req.post(
+                _DINOIKI_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": "gpt-4o", "messages": messages, "max_tokens": 2048, "temperature": 0.3, "stream": True},
+                stream=True, timeout=120,
+            )
+            if not resp.ok:
+                yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                ps = line[5:].strip()
+                if ps == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(ps)
+                    text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                    if text:
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+                except Exception:
+                    pass
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 DIST = Path(__file__).resolve().parents[1] / "dist"
 if DIST.exists():
     app.mount("/", StaticFiles(directory=DIST, html=True), name="artifact")
