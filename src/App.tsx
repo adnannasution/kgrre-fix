@@ -166,7 +166,6 @@ export default function App() {
   const [datasets, setDatasets] = useState<DatasetSummary[]>([])
   const [activeId, setActiveId] = useState(cleanSession ? '' : localStorage.getItem('kg-active-dataset') ?? '')
   const [stats, setStats] = useState<DatasetStats>()
-  const [statsLoading, setStatsLoading] = useState(false)
   const [job, setJob] = useState<ImportJob>()
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -207,9 +206,7 @@ export default function App() {
     }
     if (cleanSession) localStorage.removeItem('kg-active-dataset')
     else localStorage.setItem('kg-active-dataset', activeId)
-    setStatsLoading(true)
-    setStats(undefined)
-    api.stats(activeId).then(setStats).catch((reason) => setError(message(reason))).finally(() => setStatsLoading(false))
+    void api.stats(activeId).then(setStats).catch((reason) => setError(message(reason)))
   }, [activeId])
 
   useEffect(() => {
@@ -219,10 +216,7 @@ export default function App() {
       setJob(next)
       if (next.status === 'completed') {
         await refreshDatasets()
-        // Hanya auto-switch ke dataset baru jika belum ada dataset yang aktif.
-        // Kalau sudah ada dataset aktif (mis. upload domain tambahan), jangan
-        // ganti activeId agar tampilan existing dataset tidak terganggu.
-        if (!activeId && next.dataset_id) setActiveId(next.dataset_id)
+        setActiveId(next.dataset_id ?? '')
         setPage('overview')
         await refreshFolder()
       }
@@ -271,7 +265,7 @@ export default function App() {
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
-          {false && <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />}
+          <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
@@ -2509,8 +2503,6 @@ function DataReview({ dataset }: { dataset?: DatasetSummary }) {
 function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll }: { datasets: DatasetSummary[]; activeId: string; onActivate: (id: string) => void; onRefresh: () => Promise<void>; onResetAll: () => void }) {
   const [deleting, setDeleting] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
-  const [recovering, setRecovering] = useState(false)
-  const [recoverMsg, setRecoverMsg] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [fileRows, setFileRows] = useState<Record<string, LoadSummaryRow[]>>({})
   const [fileLoading, setFileLoading] = useState<string | null>(null)
@@ -2682,7 +2674,7 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
         <div className="hero-stat">
           <span className="hero-stat-num">{datasets.length}</span>
           <span className="eyebrow">dataset tersedia</span>
-          {datasets.length > 0 && (
+          {false && datasets.length > 0 && (
             <button
               className="reset-all-btn"
               onClick={() => void resetAll()}
@@ -2696,32 +2688,6 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
       </div>
 
       {!datasets.length && <NoDataset />}
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0' }}>
-        <button
-          className="secondary small"
-          disabled={recovering}
-          onClick={async () => {
-            setRecovering(true)
-            setRecoverMsg('')
-            try {
-              const res = await fetch('/api/recover-datasets', { method: 'POST' })
-              const data = await res.json()
-              if (data.count > 0) {
-                setRecoverMsg(`Berhasil memulihkan ${data.count} dataset.`)
-                await onRefresh()
-              } else {
-                setRecoverMsg('Tidak ada data yang bisa dipulihkan di database.')
-              }
-            } catch {
-              setRecoverMsg('Gagal menghubungi server.')
-            } finally {
-              setRecovering(false)
-            }
-          }}
-        >{recovering ? 'Memeriksa database…' : 'Pulihkan dataset dari database'}</button>
-        {recoverMsg && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</span>}
-      </div>
 
       {datasets.length > 0 && (
         <div className="dm-table-wrap">
@@ -2953,8 +2919,6 @@ const DOMAIN_LABELS: Record<string, string> = {
   bad_actor:               'Bad Actor',
   critical_equipment:      'Critical Equipment',
   metering:                'Metering',
-  inspection_plan:         'Inspection Plan',
-  ppms:                    'PPMS',
   monitoring_operasi:      'Monitoring Operasi',
   rotor:                   'Rotor',
   atg:                     'ATG',

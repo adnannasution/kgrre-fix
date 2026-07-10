@@ -94,15 +94,6 @@ def _detect_domain_by_columns(headers: list[str]) -> str | None:
     if has('status_metering') and has('cert_no_metering', 'date_expired_metering'):
         return 'metering'
 
-    # Inspection Plan — type_inspection + date plan + tag_no_ln sangat spesifik
-    # Harus ada tag_no_ln (bukan hanya 'equipment') agar tidak bentrok dengan file inspection biasa
-    if has('type_inspection') and has('due_date', 'plan_date', 'due_year') and has('tag_no_ln'):
-        return 'inspection_plan'
-
-    # PPMS (Predictive Maintenance System) — status_optimasi + status_model + resume_kondisi sangat spesifik
-    if has('status_optimasi') and has('status_model') and has('resume_kondisi'):
-        return 'ppms'
-
     # Zero Clamp — tag_no_ln atau type_damage + type_perbaikan
     if has('tag_no_ln') or (has('type_damage') and has('type_perbaikan', 'tanggal_dipasang')):
         return 'zero_clamp'
@@ -2991,163 +2982,6 @@ def _build_metering_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> N
     """)
 
 
-def _build_inspection_plan_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
-    if not views:
-        return
-    c = _union_cols(con, views)
-    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit', 'ru', 'kilang', default='NULL')})"
-    eq_expr = _cs(c, 'equipment', 'tag_no_ln', 'tag_number', 'tag_no')
-    con.execute(f"""
-        CREATE TABLE inspection_plan_stage AS
-        SELECT
-            {eq_expr} AS equipment_raw,
-            {_cs(c, 'tag_no_ln', 'tag_number', 'tag_no')} AS tag_raw,
-            {_cs(c, 'type_inspection')} AS type_inspection,
-            {_cs(c, 'type_pekerjaan', 'type_work')} AS type_pekerjaan,
-            {_cs(c, 'type_equipment')} AS type_equipment,
-            {_cs(c, 'due_date', cast=True)} AS due_date,
-            {_cs(c, 'due_year', cast=True)} AS due_year,
-            {_cs(c, 'plan_date', cast=True)} AS plan_date,
-            {_cs(c, 'plan_year', cast=True)} AS plan_year,
-            {_cs(c, 'actual_date', cast=True)} AS actual_date,
-            {_cs(c, 'actual_year', cast=True)} AS actual_year,
-            {_cs(c, 'result_remaining_life')} AS result_remaining_life,
-            {_cs(c, 'result_visual')} AS result_visual,
-            {_cs(c, 'grand_result')} AS grand_result,
-            {_cs(c, 'periode', 'period', cast=True)} AS periode,
-            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
-            _input_source_file AS source_file,
-            _input_source_sheet AS source_sheet,
-            _source_row AS source_row,
-            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
-        FROM ({union_sql})
-        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
-    """)
-    con.execute("""
-        ALTER TABLE inspection_plan_stage ADD COLUMN plan_id VARCHAR;
-        UPDATE inspection_plan_stage
-        SET plan_id = 'node_ip_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || equipment_raw || '|' || source_record_id);
-        ALTER TABLE inspection_plan_stage ADD COLUMN equipment_id VARCHAR;
-        UPDATE inspection_plan_stage SET equipment_id = e.equipment_id
-        FROM equipment_master e
-        WHERE inspection_plan_stage.refinery_unit = e.refinery_unit
-          AND norm_code(inspection_plan_stage.equipment_raw) = norm_code(e.equipment_code_clean)
-          AND nullif(trim(inspection_plan_stage.equipment_raw), '') IS NOT NULL;
-    """)
-    con.execute("""
-        INSERT INTO node_raw
-        SELECT plan_id, 'inspection_plan', equipment_raw,
-               coalesce(nullif(equipment_raw, ''), 'Inspection Plan'), 'inspection_plan',
-               json_object(
-                   'refinery_unit', refinery_unit, 'equipment_raw', equipment_raw,
-                   'tag_raw', tag_raw, 'type_inspection', type_inspection,
-                   'type_pekerjaan', type_pekerjaan, 'type_equipment', type_equipment,
-                   'due_date', due_date, 'due_year', due_year,
-                   'plan_date', plan_date, 'plan_year', plan_year,
-                   'actual_date', actual_date, 'actual_year', actual_year,
-                   'result_remaining_life', result_remaining_life,
-                   'result_visual', result_visual, 'grand_result', grand_result,
-                   'periode', periode),
-               source_file, source_sheet, source_row, source_record_id
-        FROM inspection_plan_stage WHERE plan_id IS NOT NULL
-    """)
-    con.execute("""
-        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-            domain, confidence, match_rule, is_candidate, properties_json,
-            source_file, source_sheet, source_row, source_record_id)
-        SELECT equipment_id, plan_id, 'EQUIPMENT_HAS_INSPECTION_PLAN',
-               'inspection_plan', 1.0, 'equipment_exact', false,
-               json_object('equipment_raw', equipment_raw),
-               source_file, source_sheet, source_row, source_record_id
-        FROM inspection_plan_stage WHERE equipment_id IS NOT NULL AND plan_id IS NOT NULL
-    """)
-    con.execute("""
-        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-            domain, confidence, match_rule, is_candidate, properties_json,
-            source_file, source_sheet, source_row, source_record_id)
-        SELECT DISTINCT r.refinery_unit_id, s.plan_id, 'REFINERY_UNIT_HAS_INSPECTION_PLAN',
-               'inspection_plan', 1.0, 'refinery_unit_direct', false,
-               json_object('refinery_unit', s.refinery_unit),
-               s.source_file, s.source_sheet, s.source_row, s.source_record_id
-        FROM inspection_plan_stage s
-        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
-        WHERE s.plan_id IS NOT NULL
-    """)
-
-
-def _build_ppms_nodes(con: duckdb.DuckDBPyConnection, views: list[str]) -> None:
-    if not views:
-        return
-    c = _union_cols(con, views)
-    union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
-    ru_expr = f"ru_normalize({_cs(c, 'refinery_unit', 'ru', 'kilang', default='NULL')})"
-    eq_expr = _cs(c, 'equipment', 'tag_number', 'tag_no')
-    con.execute(f"""
-        CREATE TABLE ppms_stage AS
-        SELECT
-            {eq_expr} AS equipment_raw,
-            {_cs(c, 'model_name', 'nama_model')} AS model_name,
-            {_cs(c, 'status_optimasi')} AS status_optimasi,
-            {_cs(c, 'tanggal_optimasi', 'tanggal_optimasi_last_date', 'last_date', cast=True)} AS tanggal_optimasi,
-            {_cs(c, 'status_model')} AS status_model,
-            {_cs(c, 'problem_description', 'deskripsi_problem', 'problem_desc')} AS problem_description,
-            {_cs(c, 'resume_kondisi', 'resume')} AS resume_kondisi,
-            coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
-            _input_source_file AS source_file,
-            _input_source_sheet AS source_sheet,
-            _source_row AS source_row,
-            'record_' || md5(_input_source_file || '|' || cast(_source_row AS VARCHAR)) AS source_record_id
-        FROM ({union_sql})
-        WHERE nullif(trim({eq_expr}), '') IS NOT NULL
-    """)
-    con.execute("""
-        ALTER TABLE ppms_stage ADD COLUMN ppms_id VARCHAR;
-        UPDATE ppms_stage
-        SET ppms_id = 'node_ppms_' || md5(coalesce(refinery_unit,'UNKNOWN') || '|' || equipment_raw || '|' || source_record_id);
-        ALTER TABLE ppms_stage ADD COLUMN equipment_id VARCHAR;
-        UPDATE ppms_stage SET equipment_id = e.equipment_id
-        FROM equipment_master e
-        WHERE ppms_stage.refinery_unit = e.refinery_unit
-          AND norm_code(ppms_stage.equipment_raw) = norm_code(e.equipment_code_clean)
-          AND nullif(trim(ppms_stage.equipment_raw), '') IS NOT NULL;
-    """)
-    con.execute("""
-        INSERT INTO node_raw
-        SELECT ppms_id, 'ppms', equipment_raw,
-               coalesce(nullif(model_name, ''), nullif(equipment_raw, ''), 'PPMS'), 'ppms',
-               json_object(
-                   'refinery_unit', refinery_unit, 'equipment_raw', equipment_raw,
-                   'model_name', model_name, 'status_optimasi', status_optimasi,
-                   'tanggal_optimasi', tanggal_optimasi, 'status_model', status_model,
-                   'problem_description', problem_description, 'resume_kondisi', resume_kondisi),
-               source_file, source_sheet, source_row, source_record_id
-        FROM ppms_stage WHERE ppms_id IS NOT NULL
-    """)
-    con.execute("""
-        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-            domain, confidence, match_rule, is_candidate, properties_json,
-            source_file, source_sheet, source_row, source_record_id)
-        SELECT equipment_id, ppms_id, 'EQUIPMENT_HAS_PPMS',
-               'ppms', 1.0, 'equipment_exact', false,
-               json_object('equipment_raw', equipment_raw),
-               source_file, source_sheet, source_row, source_record_id
-        FROM ppms_stage WHERE equipment_id IS NOT NULL AND ppms_id IS NOT NULL
-    """)
-    con.execute("""
-        INSERT INTO relationship_raw (source_node_id, target_node_id, relationship_type,
-            domain, confidence, match_rule, is_candidate, properties_json,
-            source_file, source_sheet, source_row, source_record_id)
-        SELECT DISTINCT r.refinery_unit_id, s.ppms_id, 'REFINERY_UNIT_HAS_PPMS',
-               'ppms', 1.0, 'refinery_unit_direct', false,
-               json_object('refinery_unit', s.refinery_unit),
-               s.source_file, s.source_sheet, s.source_row, s.source_record_id
-        FROM ppms_stage s
-        JOIN ru_reference r ON s.refinery_unit = r.refinery_unit
-        WHERE s.ppms_id IS NOT NULL
-    """)
-
-
 # ---------------------------------------------------------------------------
 # Output writer
 # ---------------------------------------------------------------------------
@@ -3271,8 +3105,6 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
             "spm_workplan": [], "tank_workplan": [], "jetty_workplan": [],
             "readiness_tank": [], "readiness_jetty": [], "readiness_spm": [],
             "metering": [],
-            "inspection_plan": [],
-            "ppms": [],
         }
 
         job.phase = "Membaca sheet Excel"
@@ -3427,8 +3259,6 @@ def _run_etl(job: ImportJob, excel_paths: list[Path], out_dir: Path, append: boo
         job.progress = 89
         job.phase = "Membangun node Readiness SPM"
         _safe("Metering", _build_metering_nodes, con, domain_views["metering"])
-        _safe("Inspection Plan", _build_inspection_plan_nodes, con, domain_views["inspection_plan"])
-        _safe("PPMS", _build_ppms_nodes, con, domain_views["ppms"])
 
         _safe("Readiness SPM", _build_readiness_subtype_nodes, con, domain_views["readiness_spm"],
               "readiness_spm", "SPM", "readiness_spm_stage", [])

@@ -416,8 +416,6 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
                 ('power_steam',             'EQUIPMENT_HAS_POWER_STEAM',             'equipment_raw'),
                 ('metering',               'EQUIPMENT_HAS_METERING',               'equipment_raw'),
-                ('inspection_plan',        'EQUIPMENT_HAS_INSPECTION_PLAN',        'equipment_raw'),
-                ('ppms',                   'EQUIPMENT_HAS_PPMS',                   'equipment_raw'),
             ]:
                 connection.execute(f"""
                     INSERT INTO kg_relationship
@@ -647,73 +645,6 @@ def reset_all():
     return _reset_all()
 
 
-@app.post("/api/recover-datasets")
-def recover_datasets(body: dict = {}):
-    """Pulihkan entri dataset_catalog dari data yang masih ada di kg_node.
-    Jika body berisi {dataset_ids: [...]} hanya dataset_id tersebut yang dicek.
-    Jika kosong, baca daftar dataset_id dari dataset_catalog (sebagai fallback
-    untuk kasus catalog ada tapi count stale) plus cek via pg_stats."""
-    ensure_schema_once()
-    from psycopg.rows import tuple_row
-    from .config import get_dataset_row, insert_dataset as _insert_ds
-    recovered = []
-
-    # Kumpulkan dataset_id kandidat:
-    # 1. Dari request body jika ada.
-    # 2. Dari dataset_catalog (periksa dataset yang count-nya mungkin stale).
-    # 3. Dari pg_stats (kolom dataset_id di kg_node) — cepat, tidak scan data.
-    candidate_ids: list[str] = list(body.get("dataset_ids") or [])
-
-    with pool().connection() as conn:
-        with conn.cursor(row_factory=tuple_row) as cur:
-            # Ambil dataset_id dari dataset_catalog (tabel kecil, tanpa RLS)
-            cur.execute("SELECT id FROM dataset_catalog")
-            catalog_ids = {r[0] for r in cur.fetchall()}
-
-            # Ambil dataset_id unik dari pg_stats (statistik kolom, bukan data)
-            # tanpa perlu scan kg_node sama sekali.
-            cur.execute("""
-                SELECT DISTINCT most_common_vals::text
-                FROM pg_stats
-                WHERE tablename = 'kg_node' AND attname = 'dataset_id'
-                LIMIT 1
-            """)
-            # pg_stats menyimpan sebagai array literal; parse sederhana
-            row = cur.fetchone()
-            if row and row[0]:
-                import re as _re
-                stats_ids = _re.findall(r'[0-9a-f]{32}', row[0])
-                for sid in stats_ids:
-                    if sid not in catalog_ids and sid not in candidate_ids:
-                        candidate_ids.append(sid)
-
-    # Untuk setiap kandidat yang belum ada di catalog, hitung & daftarkan.
-    for did in candidate_ids:
-        if did in catalog_ids:
-            continue
-        try:
-            with scoped(did) as conn:
-                nc = fetch_tuple(conn, "SELECT count(*) FROM kg_node")[0]
-                ec = fetch_tuple(conn, "SELECT count(*) FROM kg_relationship")[0]
-            if nc == 0:
-                continue
-            _insert_ds({
-                "id": did,
-                "name": f"Dataset Recovered ({nc:,} nodes)",
-                "mode": "etl_csv_graph",
-                "node_count": nc,
-                "edge_count": ec,
-                "issue_count": 0,
-                "workbooks": [],
-                "uploaded_package": False,
-            })
-            recovered.append({"dataset_id": did, "node_count": nc, "edge_count": ec})
-        except Exception:
-            pass
-
-    return {"recovered": recovered, "count": len(recovered)}
-
-
 @app.get("/api/datasets/{dataset_id}/load-summary")
 def load_summary_endpoint(dataset_id: str):
     get_dataset(dataset_id)
@@ -730,7 +661,6 @@ def stats(dataset_id: str):
     with_db(dataset_id)
     connection = db_for(dataset_id)
     try:
-        connection.execute("SET LOCAL statement_timeout = '25s'")
         node_types = rows(connection, "SELECT node_type, count(*) count FROM kg_node GROUP BY node_type ORDER BY count DESC")
         edge_types = rows(connection, "SELECT relationship_type, is_candidate, count(*) count FROM kg_relationship GROUP BY relationship_type,is_candidate ORDER BY count DESC")
         totals = fetch_tuple(
@@ -1931,8 +1861,6 @@ _ALWAYS_SHOW_DOMAINS: list[tuple[str, str, str]] = [
     ('tank_workplan',    'EQUIPMENT_HAS_TANK_WORKPLAN',    'equipment_raw'),
     ('zero_clamp',       'EQUIPMENT_HAS_ZERO_CLAMP',       'equipment_raw'),
     ('metering',         'EQUIPMENT_HAS_METERING',         'equipment_raw'),
-    ('inspection_plan',  'EQUIPMENT_HAS_INSPECTION_PLAN',  'equipment_raw'),
-    ('ppms',             'EQUIPMENT_HAS_PPMS',             'equipment_raw'),
 ]
 
 
