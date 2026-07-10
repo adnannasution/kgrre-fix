@@ -3339,10 +3339,53 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     }
   }
 
+  const autoFindAndLoad = async (chain: Chain) => {
+    setLoading(true)
+    setError('')
+    setSelectedNode(null)
+    setPickedEq(null)
+    setEqQuery('')
+    try {
+      const rootStep = chain.steps[0]
+      const firstRelStep = chain.steps.find(s => s.relType)
+      const candidates = await api.search(dataset.id, '', rootStep.nodeType, '', 50)
+      if (!firstRelStep || candidates.length === 0) {
+        if (candidates[0]) { setPickedEq(candidates[0]); await loadGraph(chain, candidates[0]) }
+        else { setGraph(emptyGraph); setLoading(false); setError('Tidak ada equipment ditemukan.') }
+        return
+      }
+      // Cek 10 equipment paralel, ambil yang pertama cocok
+      const BATCH = 10
+      for (let i = 0; i < candidates.length; i += BATCH) {
+        const batch = candidates.slice(i, i + BATCH)
+        const results = await Promise.all(
+          batch.map(eq =>
+            api.neighbors(dataset.id, eq.id, { depth: 1, includeCandidates: false, minConfidence: 0, limit: 5 })
+              .then(s => ({ eq, match: s.nodes.some(n => n.kind === firstRelStep.nodeType) }))
+              .catch(() => ({ eq, match: false }))
+          )
+        )
+        const found = results.find(r => r.match)
+        if (found) {
+          setPickedEq(found.eq)
+          setEqQuery(found.eq.label)
+          await loadGraph(chain, found.eq)
+          return
+        }
+      }
+      setGraph(emptyGraph)
+      setLoading(false)
+      setError('Tidak ditemukan equipment yang terhubung ke jalur ini. Pastikan relasi sudah direbuild.')
+    } catch (e) {
+      setError(message(e))
+      setLoading(false)
+    }
+  }
+
   const handleChainClick = (chain: Chain) => {
     setSelectedChain(chain)
     setSelectedStep(chain.steps[0])
-    if (pickedEq) void loadGraph(chain, pickedEq)
+    void autoFindAndLoad(chain)
   }
 
   const handlePickEq = (eq: GraphNode) => {
