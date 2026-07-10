@@ -166,6 +166,7 @@ export default function App() {
   const [datasets, setDatasets] = useState<DatasetSummary[]>([])
   const [activeId, setActiveId] = useState(cleanSession ? '' : localStorage.getItem('kg-active-dataset') ?? '')
   const [stats, setStats] = useState<DatasetStats>()
+  const [statsLoading, setStatsLoading] = useState(false)
   const [job, setJob] = useState<ImportJob>()
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -206,7 +207,9 @@ export default function App() {
     }
     if (cleanSession) localStorage.removeItem('kg-active-dataset')
     else localStorage.setItem('kg-active-dataset', activeId)
-    void api.stats(activeId).then(setStats).catch((reason) => setError(message(reason)))
+    setStatsLoading(true)
+    setStats(undefined)
+    api.stats(activeId).then(setStats).catch((reason) => setError(message(reason))).finally(() => setStatsLoading(false))
   }, [activeId])
 
   useEffect(() => {
@@ -2720,6 +2723,32 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
           {recoverMsg && <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</p>}
         </div>
       )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0' }}>
+        <button
+          className="secondary small"
+          disabled={recovering}
+          onClick={async () => {
+            setRecovering(true)
+            setRecoverMsg('')
+            try {
+              const res = await fetch('/api/recover-datasets', { method: 'POST' })
+              const data = await res.json()
+              if (data.count > 0) {
+                setRecoverMsg(`Berhasil memulihkan ${data.count} dataset.`)
+                await onRefresh()
+              } else {
+                setRecoverMsg('Tidak ada data yang bisa dipulihkan di database.')
+              }
+            } catch {
+              setRecoverMsg('Gagal menghubungi server.')
+            } finally {
+              setRecovering(false)
+            }
+          }}
+        >{recovering ? 'Memeriksa database…' : 'Pulihkan dataset dari database'}</button>
+        {recoverMsg && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</span>}
+      </div>
 
       {datasets.length > 0 && (
         <div className="dm-table-wrap">
