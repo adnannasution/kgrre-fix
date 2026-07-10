@@ -3923,10 +3923,7 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
         {messages.map((msg, idx) => (
           <div key={idx} className={`chatbot-msg chatbot-msg-${msg.role}`}>
             <div className="chatbot-msg-bubble">
-              {msg.role === 'user'
-                ? <pre className="chatbot-msg-text">{msg.content}</pre>
-                : <div className="chatbot-msg-text chatbot-msg-md">{msg.content ? renderMarkdown(msg.content) : (generating ? '…' : '')}</div>
-              }
+              <pre className="chatbot-msg-text">{msg.content || (msg.role === 'assistant' && generating ? '…' : '')}</pre>
               {msg.error && <div className="chatbot-msg-error">⚠ {msg.error}</div>}
             </div>
           </div>
