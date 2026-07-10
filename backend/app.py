@@ -4420,83 +4420,46 @@ def delete_saved_analysis(dataset_id: str, analysis_id: int):
 class ChatRequest(BaseModel):
     question: str
     history: list = []   # [{role, content}]
-    role: str = "engineer"   # engineer | manager | vp
 
 
-def _detect_question_intent(question: str) -> str:
-    """Deteksi tipe pertanyaan untuk panduan cara menjawab."""
-    q = question.lower()
-    if any(k in q for k in ['cari', 'temukan', 'mana', 'siapa', 'apa itu', 'detail', 'info tentang', 'lihat']):
-        return 'search'
-    if any(k in q for k in ['berapa', 'jumlah', 'total', 'rata-rata', 'persentase', 'persen', 'count', 'hitung']):
-        return 'aggregate'
-    if any(k in q for k in ['jika', 'kalau', 'dampak', 'pengaruh', 'risiko jika', 'apa yang terjadi', 'impact', 'akibat', 'bottleneck']):
-        return 'impact'
-    if any(k in q for k in ['tren', 'pola', 'insight', 'rekomendasi', 'prioritas', 'strategi', 'fokus', 'sebaiknya', 'portfolio', 'kinerja']):
-        return 'insight'
-    return 'general'
+_CHAT_SYSTEM_PROMPT = """Kamu adalah asisten AI untuk sistem knowledge graph (KG) kilang minyak KGRRE.
 
+Kamu melayani siapa saja yang bertanya — engineer, supervisor, manajer, VP, direktur — tanpa perlu tahu siapa mereka. Cara kamu menjawab ditentukan otomatis dari ISI pertanyaannya:
 
-_KG_BASE_RULES = """
-CARA MENJAWAB BERBASIS KNOWLEDGE GRAPH (bukan SQL biasa):
-- MULTI-HOP: Telusuri rantai relasi antar entitas, bukan hanya baca nilai per kolom.
-- CENTRALITY: Equipment dengan banyak koneksi = hub = titik kritis jaringan.
-- CROSS-DOMAIN: Entitas yang muncul di banyak domain sekaligus = sinyal risiko majemuk.
-- ISOLATED: Node tanpa koneksi = blind spot operasional (tidak terlihat di SQL biasa).
-- JANGAN: bilang "tabel X memiliki Y baris". JANGAN: mengarang data.
-Gunakan Bahasa Indonesia. Berikan interpretasi graph, bukan daftar nilai.
+BACA LEVEL PERTANYAAN SECARA OTOMATIS:
+• Pertanyaan teknis/spesifik (kode equipment, MTBF, failure mode, status WO, detail inspeksi)
+  → Jawab teknis dan spesifik. Sertakan angka, kode, dan rekomendasi tindakan teknis.
+
+• Pertanyaan agregat/perbandingan (berapa total, persentase, trend, perbandingan antar RU)
+  → Jawab dengan ringkasan numerik + konteks (distribusi, outlier, pola).
+
+• Pertanyaan dampak/risiko (jika X terjadi, apa akibatnya; bottleneck; kegagalan kritis)
+  → Telusuri rantai relasi multi-hop. Identifikasi cascade risk yang tidak terlihat di data flat.
+
+• Pertanyaan insight/strategi/prioritas (sebaiknya apa, mana yang perlu diperhatikan, rekomendasi)
+  → Sintesis data menjadi narasi bermakna. Sebutkan prioritas, gap, dan implikasi operasional/bisnis.
+
+• Pertanyaan pencarian (cari equipment X, info tentang Y)
+  → Tampilkan entitas yang relevan + posisinya dalam graph (hub/terisolasi, domain terhubung).
+
+CARA MENJAWAB BERBASIS KNOWLEDGE GRAPH — ini yang membedakan dari query SQL biasa:
+• MULTI-HOP: Baca rantai relasi antar entitas, bukan hanya nilai per field. Equipment → WO open → reliability top-risk → RKAP terlambat = cascading risk yang hanya terlihat lewat graph.
+• CENTRALITY: Equipment dengan banyak koneksi ke banyak domain = hub = titik kritis jaringan.
+• CROSS-DOMAIN: Entitas yang muncul di beberapa domain sekaligus = sinyal risiko majemuk.
+• ISOLATED NODE: Equipment tanpa koneksi = blind spot operasional (tidak ada data apapun terhubung).
+• POLA STRUKTURAL: Distribusi failure mode, konsentrasi risiko per RU, gap coverage domain.
+
+LARANGAN:
+• Jangan bilang "tabel X memiliki Y baris" — itu cara SQL.
+• Jangan mengarang data yang tidak ada di konteks.
+• Jangan sertakan jargon teknis graph (node/edge/graph) dalam jawaban ke user — pakai bahasa operasional (equipment, relasi, terhubung ke, dst.).
+
+Gunakan Bahasa Indonesia. Sesuaikan kedalaman jawaban dengan level pertanyaan yang masuk.
 """
 
-_ROLE_PERSONA = {
-    "engineer": (
-        "Kamu menjawab sebagai asisten untuk ENGINEER / INSINYUR RELIABILITY.\n"
-        "Fokus: detail teknis, root cause, MTBF/MTTR, failure mode, status work order, kondisi spesifik equipment.\n"
-        "Gaya: teknis, spesifik, sertakan angka dan kode equipment. Rekomendasikan tindakan teknis konkret.\n"
-        "Untuk pencarian: tampilkan properties lengkap equipment yang ditemukan.\n"
-        "Untuk agregat: sertakan breakdown per jenis/tipe.\n"
-        "Untuk impact: analisis teknis dari relasi langsung equipment (WO, bad actor, inspection).\n"
-        "Untuk insight: identifikasi failure pattern, recurring bad actor, MTBF outlier."
-    ),
-    "manager": (
-        "Kamu menjawab sebagai asisten untuk MANAJER / SUPERINTENDENT.\n"
-        "Fokus: coverage data, program terlambat, trend per RU, prioritas perbaikan, efektivitas maintenance.\n"
-        "Gaya: ringkas tapi lengkap, orientasi tindakan manajemen. Sertakan persentase dan perbandingan antar RU.\n"
-        "Untuk pencarian: tampilkan posisi equipment dalam konteks RU-nya (coverage, relasi domain).\n"
-        "Untuk agregat: bandingkan antar RU atau antar domain.\n"
-        "Untuk impact: identifikasi cascading risk yang mempengaruhi program/schedule.\n"
-        "Untuk insight: soroti gap coverage, program mana yang perlu eskalasi, distribusi risiko per RU."
-    ),
-    "vp": (
-        "Kamu menjawab sebagai asisten untuk VP / DIREKTUR.\n"
-        "Fokus: portfolio risk, kesiapan operasional keseluruhan, budget RKAP, strategic gap, benchmark antar RU.\n"
-        "Gaya: executive summary, hindari detail teknis berlebihan, fokus pada implikasi bisnis dan keputusan strategis.\n"
-        "Untuk pencarian: cukup posisi strategis (kritis/tidak, coverage data, risiko tinggi/rendah).\n"
-        "Untuk agregat: sajikan sebagai KPI ringkas dengan konteks (baik/buruk dibanding ekspektasi).\n"
-        "Untuk impact: analisis dampak operasional dan bisnis jika terjadi kegagalan pada equipment kritis.\n"
-        "Untuk insight: rekomendasikan prioritas investasi, program yang perlu akselerasi, RU mana yang butuh perhatian segera."
-    ),
-}
 
-_INTENT_GUIDANCE = {
-    "search": "Ini PERTANYAAN PENCARIAN. Tampilkan entitas yang relevan dengan detail properties dan posisinya dalam graph (terhubung ke domain apa, apakah hub/terisolasi).",
-    "aggregate": "Ini PERTANYAAN AGREGAT. Hitung dan ringkas, tapi sertakan konteks graph — distribusi, outlier, dan pola yang muncul dari agregasi.",
-    "impact": "Ini PERTANYAAN IMPACT/DAMPAK. Telusuri rantai relasi multi-hop untuk menjelaskan dampak cascading. Identifikasi equipment/domain mana yang ikut terpengaruh secara tidak langsung.",
-    "insight": "Ini PERTANYAAN INSIGHT/REKOMENDASI. Sintesis semua data yang ada menjadi narasi bermakna. Identifikasi pola tersembunyi, prioritas tindakan, dan gap strategis.",
-    "general": "Jawab pertanyaan ini dengan konteks graph yang ada. Sertakan insight yang relevan.",
-}
-
-
-def _build_chat_system_prompt(role: str, question: str, ctx: str) -> str:
-    persona = _ROLE_PERSONA.get(role, _ROLE_PERSONA["engineer"])
-    intent = _detect_question_intent(question)
-    intent_guide = _INTENT_GUIDANCE[intent]
-    return (
-        f"Kamu adalah asisten AI untuk sistem knowledge graph (KG) kilang minyak KGRRE.\n\n"
-        f"=== PERSONA ===\n{persona}\n\n"
-        f"=== PANDUAN TIPE PERTANYAAN ===\n{intent_guide}\n\n"
-        f"=== ATURAN KG ===\n{_KG_BASE_RULES}\n"
-        f"=== DATA KNOWLEDGE GRAPH ===\n{ctx}\n==========================="
-    )
+def _build_chat_system_prompt(question: str, ctx: str) -> str:
+    return f"{_CHAT_SYSTEM_PROMPT}\n=== DATA KNOWLEDGE GRAPH ===\n{ctx}\n==========================="
 
 
 def _props_to_text(props: dict) -> str:
@@ -4869,7 +4832,7 @@ def dataset_chat(dataset_id: str, req: ChatRequest):
     finally:
         connection.close()
 
-    system_msg = _build_chat_system_prompt(req.role, req.question, ctx)
+    system_msg = _build_chat_system_prompt(req.question, ctx)
 
     messages = [{"role": "system", "content": system_msg}]
     for h in (req.history or [])[-10:]:
@@ -4916,7 +4879,6 @@ class NodeChatRequest(BaseModel):
     node_id: str
     question: str
     history: list = []
-    role: str = "engineer"
 
 
 def _build_node_context(connection, node_id: str) -> str:
@@ -5081,21 +5043,12 @@ def node_chat(dataset_id: str, req: NodeChatRequest):
     finally:
         connection.close()
 
-    persona = _ROLE_PERSONA.get(req.role, _ROLE_PERSONA["engineer"])
-    intent = _detect_question_intent(req.question)
-    intent_guide = _INTENT_GUIDANCE[intent]
     system_msg = (
-        f"Kamu adalah asisten AI untuk sistem knowledge graph (KG) kilang minyak KGRRE.\n"
-        f"User sedang menganalisis satu node/entitas spesifik.\n\n"
-        f"=== PERSONA ===\n{persona}\n\n"
-        f"=== PANDUAN TIPE PERTANYAAN ===\n{intent_guide}\n\n"
-        f"=== ATURAN KG ===\n{_KG_BASE_RULES}\n"
-        f"KHUSUS NODE DETAIL:\n"
-        f"- Interpretasi POSISI node dalam graph (hub/isolated/normal).\n"
-        f"- Baca relasi sebagai KONTEKS OPERASIONAL, bukan daftar.\n"
-        f"- Gunakan 2-hop reachability untuk menjelaskan dampak tidak langsung.\n"
-        f"- Sebutkan domain yang TIDAK terhubung sebagai blind spot.\n\n"
-        f"=== DATA NODE ===\n{node_ctx}"
+        f"{_CHAT_SYSTEM_PROMPT}\n"
+        f"User sedang menganalisis satu entitas spesifik dalam knowledge graph.\n"
+        f"Interpretasi posisi entitas (hub/isolated/normal), baca relasi sebagai konteks operasional,\n"
+        f"gunakan 2-hop reachability untuk dampak tidak langsung, dan sebutkan domain yang TIDAK terhubung sebagai blind spot.\n\n"
+        f"=== DATA ENTITAS ===\n{node_ctx}"
     )
 
     messages = [{"role": "system", "content": system_msg}]

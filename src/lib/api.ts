@@ -219,20 +219,17 @@ export async function streamDiagnosis(
   }
 }
 
-export type ChatRole = 'engineer' | 'manager' | 'vp'
-
 export async function streamChat(
   datasetId: string,
   question: string,
   history: { role: 'user' | 'assistant'; content: string }[],
   onChunk: (text: string) => void,
   signal?: AbortSignal,
-  chatRole: ChatRole = 'engineer',
 ): Promise<void> {
   const res = await fetch(`${API}/datasets/${datasetId}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, history, role: chatRole }),
+    body: JSON.stringify({ question, history }),
     signal,
   })
   if (!res.ok) {
@@ -249,12 +246,11 @@ export async function streamNodeChat(
   history: { role: 'user' | 'assistant'; content: string }[],
   onChunk: (text: string) => void,
   signal?: AbortSignal,
-  chatRole: ChatRole = 'engineer',
 ): Promise<void> {
   const res = await fetch(`${API}/datasets/${datasetId}/node-chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ node_id: nodeId, question, history, role: chatRole }),
+    body: JSON.stringify({ node_id: nodeId, question, history }),
     signal,
   })
   if (!res.ok) {

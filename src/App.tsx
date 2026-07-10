@@ -17,7 +17,6 @@ import {
   UploadIcon,
 } from './components/Icons'
 import { api, streamDiagnosis, streamAnalysis, streamChat, streamNodeChat } from './lib/api'
-import type { ChatRole } from './lib/api'
 import type {
   DatasetStats,
   DatasetSummary,
@@ -3846,35 +3845,16 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; error?: string }
 
-const CHAT_ROLES: { value: ChatRole; label: string; desc: string }[] = [
-  { value: 'engineer', label: 'Engineer', desc: 'Detail teknis, failure mode, MTBF/MTTR, WO spesifik' },
-  { value: 'manager', label: 'Manajer', desc: 'Coverage, trend per RU, program terlambat, prioritas' },
-  { value: 'vp', label: 'VP / Direktur', desc: 'Portfolio risk, KPI ringkas, keputusan strategis' },
+const CHAT_SUGGESTIONS = [
+  'Equipment mana yang MTBF-nya paling rendah dan apa failure mode-nya?',
+  'Berapa persentase equipment yang terisolasi (blind spot) per RU?',
+  'Ada cascading risk equipment mana yang open WO sekaligus top-risk?',
+  'Apa gambaran kesiapan operasional kilang secara keseluruhan?',
+  'Equipment kritis mana yang punya risiko majemuk (multi-domain)?',
+  'RU mana yang coverage graph-nya paling lemah?',
 ]
 
-const SUGGESTIONS_BY_ROLE: Record<ChatRole, string[]> = {
-  engineer: [
-    'Equipment mana yang MTBF-nya paling rendah dan apa failure mode-nya?',
-    'Berapa work order yang masih open dan menunggu material?',
-    'Ada cascading risk equipment mana yang open WO sekaligus top-risk?',
-    'Cari equipment dengan kode pump yang terisolasi dalam graph.',
-  ],
-  manager: [
-    'Berapa persentase equipment yang terisolasi (blind spot) per RU?',
-    'Program RKAP mana yang paling banyak terlambat?',
-    'RU mana yang coverage graph-nya paling lemah?',
-    'Tren failure mode apa yang dominan di dataset ini?',
-  ],
-  vp: [
-    'Apa gambaran kesiapan operasional kilang secara keseluruhan berdasarkan graph?',
-    'Equipment kritis mana yang punya risiko majemuk (multi-domain intersection)?',
-    'Mana area yang butuh investasi data/maintenance paling mendesak?',
-    'Berikan executive summary kondisi reliability seluruh RU.',
-  ],
-}
-
 function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
-  const [chatRole, setChatRole] = useState<ChatRole>('engineer')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -3910,7 +3890,6 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
           })
         },
         abortRef.current.signal,
-        chatRole,
       )
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
@@ -3927,7 +3906,6 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
 
   const stop = () => { abortRef.current?.abort(); setGenerating(false) }
   const clearChat = () => { setMessages([]); setInput('') }
-  const suggestions = SUGGESTIONS_BY_ROLE[chatRole]
 
   return (
     <div className="chatbot-page">
@@ -3936,22 +3914,9 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
           <div className="chatbot-welcome">
             <SparkleIcon style={{ width: 40, height: 40, opacity: 0.25 }} />
             <p className="chatbot-welcome-title">Tanya AI tentang Knowledge Graph</p>
-            <p className="chatbot-welcome-sub">AI menyesuaikan kedalaman jawaban berdasarkan peran yang dipilih.</p>
-            <div className="chatbot-role-tabs">
-              {CHAT_ROLES.map(r => (
-                <button
-                  key={r.value}
-                  className={`chatbot-role-tab ${chatRole === r.value ? 'active' : ''}`}
-                  onClick={() => setChatRole(r.value)}
-                  title={r.desc}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-            <p className="chatbot-role-desc">{CHAT_ROLES.find(r => r.value === chatRole)?.desc}</p>
+            <p className="chatbot-welcome-sub">AI menyesuaikan kedalaman jawaban secara otomatis — teknis, agregat, dampak, atau strategis.</p>
             <div className="chatbot-suggestions">
-              {suggestions.map(s => (
+              {CHAT_SUGGESTIONS.map(s => (
                 <button key={s} className="chatbot-suggestion" onClick={() => setInput(s)}>{s}</button>
               ))}
             </div>
@@ -3971,14 +3936,9 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
         {messages.length > 0 && (
           <button className="chatbot-clear" onClick={clearChat}>✕ Baru</button>
         )}
-        <div className="chatbot-role-mini">
-          {CHAT_ROLES.map(r => (
-            <button key={r.value} className={`chatbot-role-mini-btn ${chatRole === r.value ? 'active' : ''}`} onClick={() => setChatRole(r.value)} title={r.desc}>{r.label}</button>
-          ))}
-        </div>
         <input
           className="chatbot-input"
-          placeholder={`Tanya sebagai ${CHAT_ROLES.find(r => r.value === chatRole)?.label}…`}
+          placeholder="Tanya apa saja tentang knowledge graph kilang…"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
@@ -3994,7 +3954,6 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
 }
 
 function NodeChatPage({ dataset }: { dataset?: DatasetSummary }) {
-  const [chatRole, setChatRole] = useState<ChatRole>('engineer')
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState<GraphNode[]>([])
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
@@ -4057,7 +4016,6 @@ function NodeChatPage({ dataset }: { dataset?: DatasetSummary }) {
           })
         },
         abortRef.current.signal,
-        chatRole,
       )
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
@@ -4174,11 +4132,6 @@ function NodeChatPage({ dataset }: { dataset?: DatasetSummary }) {
           {messages.length > 0 && (
             <button className="chatbot-clear" onClick={() => setMessages([])}>✕ Baru</button>
           )}
-          <div className="chatbot-role-mini">
-            {CHAT_ROLES.map(r => (
-              <button key={r.value} className={`chatbot-role-mini-btn ${chatRole === r.value ? 'active' : ''}`} onClick={() => setChatRole(r.value)} title={r.desc}>{r.label}</button>
-            ))}
-          </div>
           <input
             className="chatbot-input"
             placeholder={selectedNode ? `Tanya tentang ${selectedNode.label}…` : 'Pilih node dulu…'}
