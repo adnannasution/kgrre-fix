@@ -4417,6 +4417,237 @@ def delete_saved_analysis(dataset_id: str, analysis_id: int):
         connection.close()
 
 
+class ChatRequest(BaseModel):
+    question: str
+    history: list = []   # [{role, content}]
+
+
+def _gather_chat_context(connection, question: str) -> str:
+    """Kumpulkan fakta relevan dari KG berdasarkan kata kunci di pertanyaan."""
+    import re
+    q_lower = question.lower()
+
+    # Deteksi RU dari pertanyaan
+    ru_pattern = re.compile(r'\bru\s*(i{1,4}|iv|vi{0,3}|[1-9])\b', re.IGNORECASE)
+    ru_matches = ru_pattern.findall(q_lower)
+    ru_filter = None
+    if ru_matches:
+        raw = ru_matches[0].upper().strip()
+        ru_filter = f'%{raw}%'
+
+    # Deteksi node type dari pertanyaan
+    type_keywords = {
+        'equipment': ['equipment', 'alat', 'mesin', 'pump', 'compressor', 'vessel', 'heat exchanger', 'turbin'],
+        'reliability_observation': ['reliability', 'mtbf', 'mttr', 'bad actor', 'failure', 'kegagalan', 'keandalan'],
+        'maintenance_order': ['work order', 'wo ', 'maintenance order', 'perawatan', 'perbaikan', 'order'],
+        'notification': ['notification', 'notifikasi', 'laporan kerusakan'],
+        'rkap_program': ['rkap', 'program', 'anggaran', 'budget', 'biaya'],
+        'inspection_plan': ['inspection plan', 'rencana inspeksi', 'inspeksi'],
+        'ppms': ['ppms', 'predictive', 'prediktif', 'kondisi', 'model'],
+        'bad_actor': ['bad actor', 'paling sering rusak', 'breakdown', 'failure mode'],
+        'critical_equipment': ['critical', 'kritis', 'prioritas'],
+        'readiness_record': ['readiness', 'kesiapan', 'siap operasi'],
+    }
+    focus_types = [ntype for ntype, kws in type_keywords.items() if any(kw in q_lower for kw in kws)]
+    if not focus_types:
+        focus_types = ['equipment', 'reliability_observation', 'maintenance_order']
+
+    lines = []
+
+    # Statistik umum dataset
+    try:
+        total_eq = fetch_tuple(connection, "SELECT count(*) FROM kg_node WHERE node_type='equipment'")[0]
+        total_rel = fetch_tuple(connection, "SELECT count(*) FROM kg_relationship WHERE NOT is_candidate")[0]
+        lines.append(f"Dataset: {total_eq} equipment, {total_rel} relasi terverifikasi.")
+    except Exception:
+        pass
+
+    # Statistik per RU jika ada filter
+    if ru_filter:
+        try:
+            eq_ru = fetch_tuple(connection,
+                "SELECT count(*) FROM kg_node WHERE node_type='equipment' AND properties_json->>'refinery_unit' ILIKE %s",
+                [ru_filter])[0]
+            lines.append(f"Jumlah equipment di RU '{ru_matches[0].upper()}': {eq_ru}.")
+        except Exception:
+            pass
+
+    # Data per domain yang relevan
+    for ntype in focus_types[:4]:
+        try:
+            params = [ntype]
+            ru_clause = ""
+            if ru_filter:
+                ru_clause = " AND properties_json->>'refinery_unit' ILIKE %s"
+                params.append(ru_filter)
+            cnt = fetch_tuple(connection,
+                f"SELECT count(*) FROM kg_node WHERE node_type=%s{ru_clause}", params)[0]
+            if cnt == 0:
+                continue
+            lines.append(f"Jumlah node '{ntype}'{' di RU ini' if ru_filter else ''}: {cnt}.")
+
+            if ntype == 'reliability_observation':
+                agg = rows(connection,
+                    f"""SELECT
+                        sum(CASE WHEN (properties_json->>'derived_is_top_risk')='true' THEN 1 ELSE 0 END) AS top_risk,
+                        avg(CASE WHEN properties_json->>'mtbf' ~ '^[0-9]' THEN (properties_json->>'mtbf')::float END) AS avg_mtbf,
+                        avg(CASE WHEN properties_json->>'mttr' ~ '^[0-9]' THEN (properties_json->>'mttr')::float END) AS avg_mttr
+                    FROM kg_node WHERE node_type='reliability_observation'{ru_clause}""", params[1:] if ru_filter else [])
+                if agg:
+                    a = agg[0]
+                    lines.append(f"  Top risk: {a.get('top_risk') or 0}, Avg MTBF: {round(float(a['avg_mtbf'] or 0),1)}h, Avg MTTR: {round(float(a['avg_mttr'] or 0),1)}h.")
+                top_ba = rows(connection,
+                    f"""SELECT label, properties_json->>'failure_mode' AS fm, properties_json->>'mtbf' AS mtbf
+                    FROM kg_node WHERE node_type='reliability_observation'{ru_clause}
+                    AND (properties_json->>'derived_is_top_risk')='true'
+                    ORDER BY (CASE WHEN properties_json->>'mtbf' ~ '^[0-9]' THEN (properties_json->>'mtbf')::float END) ASC NULLS LAST
+                    LIMIT 5""", params[1:] if ru_filter else [])
+                if top_ba:
+                    lines.append("  Top bad actor (MTBF terendah):")
+                    for r_ in top_ba:
+                        lines.append(f"    - {r_.get('label','?')} | failure: {r_.get('fm','?')} | MTBF: {r_.get('mtbf','?')}h")
+
+            elif ntype in ('maintenance_order', 'work_order'):
+                agg = rows(connection,
+                    f"""SELECT
+                        sum(CASE WHEN (properties_json->>'derived_is_open_order')='true' THEN 1 ELSE 0 END) AS open_wos,
+                        sum(CASE WHEN properties_json->>'derived_status_bucket' IN ('WAMA','WASR') THEN 1 ELSE 0 END) AS waiting_mat
+                    FROM kg_node WHERE node_type=%s{ru_clause}""", params)
+                if agg:
+                    a = agg[0]
+                    lines.append(f"  Open WO: {a.get('open_wos') or 0}, Menunggu material: {a.get('waiting_mat') or 0}.")
+
+            elif ntype == 'rkap_program':
+                agg = rows(connection,
+                    f"""SELECT
+                        sum(CASE WHEN (properties_json->>'derived_is_delayed')='true' THEN 1 ELSE 0 END) AS delayed,
+                        sum(CASE WHEN properties_json->>'derived_planned_cost' ~ '^[0-9]'
+                            THEN (properties_json->>'derived_planned_cost')::float ELSE 0 END) AS total_budget
+                    FROM kg_node WHERE node_type='rkap_program'{ru_clause}""", params[1:] if ru_filter else [])
+                if agg:
+                    a = agg[0]
+                    lines.append(f"  Program terlambat: {a.get('delayed') or 0}, Total budget: IDR {int(a.get('total_budget') or 0):,}.")
+
+            elif ntype == 'bad_actor':
+                top = rows(connection,
+                    f"""SELECT properties_json->>'failure_mode' AS fm, count(*) AS c
+                    FROM kg_node WHERE node_type='bad_actor'{ru_clause}
+                    GROUP BY fm ORDER BY c DESC LIMIT 5""", params[1:] if ru_filter else [])
+                if top:
+                    lines.append("  Top failure mode bad actor:")
+                    for r_ in top:
+                        lines.append(f"    - {r_.get('fm','?')}: {r_.get('c','?')} kasus")
+
+            elif ntype == 'inspection_plan':
+                top = rows(connection,
+                    f"""SELECT properties_json->>'type_pekerjaan' AS tp, count(*) AS c
+                    FROM kg_node WHERE node_type='inspection_plan'{ru_clause}
+                    GROUP BY tp ORDER BY c DESC LIMIT 5""", params[1:] if ru_filter else [])
+                if top:
+                    lines.append("  Top type pekerjaan inspeksi:")
+                    for r_ in top:
+                        lines.append(f"    - {r_.get('tp','?')}: {r_.get('c','?')} rencana")
+
+            elif ntype == 'ppms':
+                agg = rows(connection,
+                    f"""SELECT properties_json->>'status_optimasi' AS st, count(*) AS c
+                    FROM kg_node WHERE node_type='ppms'{ru_clause}
+                    GROUP BY st ORDER BY c DESC LIMIT 5""", params[1:] if ru_filter else [])
+                if agg:
+                    lines.append("  Status optimasi PPMS:")
+                    for r_ in agg:
+                        lines.append(f"    - {r_.get('st','?')}: {r_.get('c','?')}")
+
+        except Exception:
+            pass
+
+    # Equipment dengan paling banyak relasi (paling sering muncul di graph)
+    try:
+        ru_clause = " AND n.properties_json->>'refinery_unit' ILIKE %s" if ru_filter else ""
+        params_eq = [ru_filter] if ru_filter else []
+        top_eq = rows(connection,
+            f"""SELECT n.label, n.business_key, count(r.relationship_id) AS deg
+            FROM kg_node n
+            JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
+            WHERE n.node_type='equipment'{ru_clause}
+            GROUP BY n.node_id, n.label, n.business_key
+            ORDER BY deg DESC LIMIT 5""", params_eq)
+        if top_eq:
+            lines.append("Top equipment berdasarkan jumlah koneksi di graph:")
+            for r_ in top_eq:
+                lines.append(f"  - {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('deg','?')} relasi")
+    except Exception:
+        pass
+
+    return '\n'.join(lines) if lines else "Tidak ada data konteks yang berhasil diambil."
+
+
+@app.post("/api/datasets/{dataset_id}/chat")
+def dataset_chat(dataset_id: str, req: ChatRequest):
+    get_dataset(dataset_id)
+    import os, requests as _req
+    api_key = os.environ.get("DINOIKI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
+
+    connection = db_for(dataset_id)
+    try:
+        connection.execute("SET LOCAL statement_timeout = '15s'")
+        ctx = _gather_chat_context(connection, req.question)
+    except Exception:
+        ctx = "Konteks tidak berhasil diambil."
+    finally:
+        connection.close()
+
+    system_msg = (
+        "Kamu adalah asisten AI untuk sistem knowledge graph kilang minyak (KGRRE). "
+        "Jawab pertanyaan user berdasarkan data faktual dari knowledge graph berikut. "
+        "Jika data tidak mencukupi untuk menjawab secara pasti, katakan demikian. "
+        "Gunakan Bahasa Indonesia. Jangan mengarang data yang tidak ada di konteks.\n\n"
+        f"=== DATA KNOWLEDGE GRAPH ===\n{ctx}\n==========================="
+    )
+
+    messages = [{"role": "system", "content": system_msg}]
+    for h in (req.history or [])[-10:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": req.question})
+
+    def _stream():
+        try:
+            resp = _req.post(
+                _DINOIKI_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": "gpt-4o", "messages": messages, "max_tokens": 2048, "temperature": 0.3, "stream": True},
+                stream=True, timeout=120,
+            )
+            if not resp.ok:
+                yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                ps = line[5:].strip()
+                if ps == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(ps)
+                    text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
+                    if text:
+                        yield f"data: {json.dumps({'text': text})}\n\n"
+                except Exception:
+                    pass
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 DIST = Path(__file__).resolve().parents[1] / "dist"
 if DIST.exists():
     app.mount("/", StaticFiles(directory=DIST, html=True), name="artifact")

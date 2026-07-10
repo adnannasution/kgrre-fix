@@ -16,7 +16,7 @@ import {
   TrashIcon,
   UploadIcon,
 } from './components/Icons'
-import { api, streamDiagnosis, streamAnalysis } from './lib/api'
+import { api, streamDiagnosis, streamAnalysis, streamChat } from './lib/api'
 import type {
   DatasetStats,
   DatasetSummary,
@@ -37,7 +37,7 @@ import type {
   RuSummary,
 } from './types'
 
-type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage' | 'analisis'
+type Page = 'overview' | 'import' | 'executive' | 'insight' | 'equipment' | 'graph' | 'depth' | 'review' | 'datasets' | 'chains' | 'coverage' | 'analisis' | 'chatbot'
 const emptyGraph: GraphSlice = { nodes: [], edges: [], truncated: false }
 
 // Ambil data dashboard berat (executive/reliability) yang dihitung di latar oleh backend.
@@ -264,6 +264,7 @@ export default function App() {
           <Nav icon={<EquipmentIcon />} label="Equipment 360" active={page === 'equipment'} onClick={() => setPage('equipment')} />
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
+          <Nav icon={<SparkleIcon />} label="Tanya AI" active={page === 'chatbot'} onClick={() => setPage('chatbot')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
           <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
@@ -319,6 +320,7 @@ export default function App() {
         {page === 'chains' && <ChainExplorer dataset={active} />}
         {page === 'coverage' && <EquipmentCoveragePage dataset={active} />}
         {page === 'analisis' && <AnalisisPage dataset={active} />}
+        {page === 'chatbot' && <ChatbotPage dataset={active} />}
         {page === 'datasets' && (
           <DatasetManager
             datasets={datasets}
@@ -3839,8 +3841,119 @@ function AnalisisPage({ dataset }: { dataset?: DatasetSummary }) {
   )
 }
 
+type ChatMessage = { role: 'user' | 'assistant'; content: string; error?: string }
+
+function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [input, setInput] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  if (!dataset) return <NoDataset />
+
+  const send = async () => {
+    const q = input.trim()
+    if (!q || generating) return
+    setInput('')
+    const newHistory = [...messages, { role: 'user' as const, content: q }]
+    setMessages(newHistory)
+    setGenerating(true)
+    abortRef.current = new AbortController()
+    let reply = ''
+    setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+    try {
+      await streamChat(
+        dataset.id, q,
+        messages.map(m => ({ role: m.role, content: m.content })),
+        (chunk) => {
+          reply += chunk
+          setMessages(prev => {
+            const updated = [...prev]
+            updated[updated.length - 1] = { role: 'assistant', content: reply }
+            return updated
+          })
+        },
+        abortRef.current.signal,
+      )
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        setMessages(prev => {
+          const updated = [...prev]
+          updated[updated.length - 1] = { role: 'assistant', content: reply || '—', error: (e as Error).message }
+          return updated
+        })
+      }
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const stop = () => { abortRef.current?.abort(); setGenerating(false) }
+
+  const clearChat = () => { setMessages([]); setInput('') }
+
+  const SUGGESTIONS = [
+    'Equipment apa yang paling banyak koneksinya di graph?',
+    'Berapa total bad actor dan apa failure mode yang paling sering terjadi?',
+    'Berapa jumlah work order yang masih open?',
+    'Equipment mana yang paling kritis berdasarkan data?',
+  ]
+
+  return (
+    <div className="chatbot-page">
+      <div className="chatbot-messages">
+        {messages.length === 0 && (
+          <div className="chatbot-welcome">
+            <SparkleIcon style={{ width: 40, height: 40, opacity: 0.25 }} />
+            <p className="chatbot-welcome-title">Tanya AI tentang Knowledge Graph</p>
+            <p className="chatbot-welcome-sub">AI akan menjawab berdasarkan data aktual dari knowledge graph dataset ini.</p>
+            <div className="chatbot-suggestions">
+              {SUGGESTIONS.map(s => (
+                <button key={s} className="chatbot-suggestion" onClick={() => { setInput(s) }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`chatbot-msg chatbot-msg-${msg.role}`}>
+            <div className="chatbot-msg-bubble">
+              <pre className="chatbot-msg-text">{msg.content || (msg.role === 'assistant' && generating ? '…' : '')}</pre>
+              {msg.error && <div className="chatbot-msg-error">⚠ {msg.error}</div>}
+            </div>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+      <div className="chatbot-input-area">
+        {messages.length > 0 && (
+          <button className="chatbot-clear" onClick={clearChat} title="Hapus percakapan">✕ Baru</button>
+        )}
+        <input
+          className="chatbot-input"
+          placeholder="Tanya sesuatu tentang data kilang…"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
+          disabled={generating}
+        />
+        {generating
+          ? <button className="chatbot-send secondary" onClick={stop}>⏹</button>
+          : <button className="chatbot-send primary" onClick={() => void send()} disabled={!input.trim()}>Kirim</button>
+        }
+      </div>
+    </div>
+  )
+}
+
 function titleFor(page: Page) {
-  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment', analisis: 'Analisis AI' })[page]
+  return ({ overview: 'Operational overview', import: 'Import center', executive: 'Executive RU', insight: 'Reliability insight', equipment: 'Equipment 360', graph: 'Graph explorer', depth: 'Depth explorer', review: 'Data review', datasets: 'Daftar dataset', chains: 'Rantai Relasi', coverage: 'Coverage Equipment', analisis: 'Analisis AI', chatbot: 'Tanya AI' })[page]
 }
 function message(reason: unknown) {
   if (reason instanceof Error) return reason.message
