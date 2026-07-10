@@ -2723,32 +2723,6 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
         {recoverMsg && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</span>}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0' }}>
-        <button
-          className="secondary small"
-          disabled={recovering}
-          onClick={async () => {
-            setRecovering(true)
-            setRecoverMsg('')
-            try {
-              const res = await fetch('/api/recover-datasets', { method: 'POST' })
-              const data = await res.json()
-              if (data.count > 0) {
-                setRecoverMsg(`Berhasil memulihkan ${data.count} dataset.`)
-                await onRefresh()
-              } else {
-                setRecoverMsg('Tidak ada data yang bisa dipulihkan di database.')
-              }
-            } catch {
-              setRecoverMsg('Gagal menghubungi server.')
-            } finally {
-              setRecovering(false)
-            }
-          }}
-        >{recovering ? 'Memeriksa database…' : 'Pulihkan dataset dari database'}</button>
-        {recoverMsg && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</span>}
-      </div>
-
       {datasets.length > 0 && (
         <div className="dm-table-wrap">
           <table className="dm-table">

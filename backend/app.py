@@ -648,47 +648,69 @@ def reset_all():
 
 
 @app.post("/api/recover-datasets")
-def recover_datasets():
+def recover_datasets(body: dict = {}):
     """Pulihkan entri dataset_catalog dari data yang masih ada di kg_node.
-    Aman dijalankan berulang kali (INSERT ON CONFLICT DO NOTHING).
-    Gunakan jika dataset_catalog kosong tapi data kg_node masih ada."""
+    Jika body berisi {dataset_ids: [...]} hanya dataset_id tersebut yang dicek.
+    Jika kosong, baca daftar dataset_id dari dataset_catalog (sebagai fallback
+    untuk kasus catalog ada tapi count stale) plus cek via pg_stats."""
     ensure_schema_once()
     from psycopg.rows import tuple_row
+    from .config import get_dataset_row, insert_dataset as _insert_ds
     recovered = []
-    # Gunakan koneksi pool langsung tanpa RLS agar bisa baca lintas dataset_id.
-    with pool().connection() as conn:
-        # Temukan semua dataset_id di kg_node yang tidak ada di catalog.
-        # Bypass RLS dengan SET LOCAL row_security = off (butuh superuser/owner tabel).
-        # Alternatif aman: query pg_class tidak perlu RLS.
-        conn.execute("SET LOCAL row_security = off")
-        with conn.cursor(row_factory=tuple_row) as cur:
-            cur.execute("""
-                SELECT n.dataset_id,
-                       count(*) FILTER (WHERE TRUE) AS nc
-                FROM kg_node n
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM dataset_catalog dc WHERE dc.id = n.dataset_id
-                )
-                GROUP BY n.dataset_id
-            """)
-            orphan_rows = cur.fetchall()
 
-        for (did, nc) in orphan_rows:
-            with conn.cursor(row_factory=tuple_row) as cur:
-                cur.execute(
-                    "SELECT count(*) FROM kg_relationship WHERE dataset_id = %s", [did]
-                )
-                ec = (cur.fetchone() or (0,))[0]
-            conn.execute(
-                """
-                INSERT INTO dataset_catalog (id, name, mode, node_count, edge_count,
-                    issue_count, workbooks, uploaded_package)
-                VALUES (%s, %s, 'etl_csv_graph', %s, %s, 0, '[]'::jsonb, false)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                [did, f"Dataset Recovered ({nc:,} nodes)", nc, ec],
-            )
+    # Kumpulkan dataset_id kandidat:
+    # 1. Dari request body jika ada.
+    # 2. Dari dataset_catalog (periksa dataset yang count-nya mungkin stale).
+    # 3. Dari pg_stats (kolom dataset_id di kg_node) — cepat, tidak scan data.
+    candidate_ids: list[str] = list(body.get("dataset_ids") or [])
+
+    with pool().connection() as conn:
+        with conn.cursor(row_factory=tuple_row) as cur:
+            # Ambil dataset_id dari dataset_catalog (tabel kecil, tanpa RLS)
+            cur.execute("SELECT id FROM dataset_catalog")
+            catalog_ids = {r[0] for r in cur.fetchall()}
+
+            # Ambil dataset_id unik dari pg_stats (statistik kolom, bukan data)
+            # tanpa perlu scan kg_node sama sekali.
+            cur.execute("""
+                SELECT DISTINCT most_common_vals::text
+                FROM pg_stats
+                WHERE tablename = 'kg_node' AND attname = 'dataset_id'
+                LIMIT 1
+            """)
+            # pg_stats menyimpan sebagai array literal; parse sederhana
+            row = cur.fetchone()
+            if row and row[0]:
+                import re as _re
+                stats_ids = _re.findall(r'[0-9a-f]{32}', row[0])
+                for sid in stats_ids:
+                    if sid not in catalog_ids and sid not in candidate_ids:
+                        candidate_ids.append(sid)
+
+    # Untuk setiap kandidat yang belum ada di catalog, hitung & daftarkan.
+    for did in candidate_ids:
+        if did in catalog_ids:
+            continue
+        try:
+            with scoped(did) as conn:
+                nc = fetch_tuple(conn, "SELECT count(*) FROM kg_node")[0]
+                ec = fetch_tuple(conn, "SELECT count(*) FROM kg_relationship")[0]
+            if nc == 0:
+                continue
+            _insert_ds({
+                "id": did,
+                "name": f"Dataset Recovered ({nc:,} nodes)",
+                "mode": "etl_csv_graph",
+                "node_count": nc,
+                "edge_count": ec,
+                "issue_count": 0,
+                "workbooks": [],
+                "uploaded_package": False,
+            })
             recovered.append({"dataset_id": did, "node_count": nc, "edge_count": ec})
+        except Exception:
+            pass
+
     return {"recovered": recovered, "count": len(recovered)}
 
 
