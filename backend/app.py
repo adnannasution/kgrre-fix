@@ -4875,12 +4875,6 @@ def dataset_chat(dataset_id: str, req: ChatRequest):
     return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-class NodeChatRequest(BaseModel):
-    node_id: str
-    question: str
-    history: list = []
-
-
 def _build_node_context(connection, node_id: str) -> str:
     """Bangun konteks lengkap untuk satu node: properties + semua relasi langsung + domain record."""
     lines = []
@@ -5026,70 +5020,6 @@ def _build_node_context(connection, node_id: str) -> str:
     return '\n'.join(lines)
 
 
-@app.post("/api/datasets/{dataset_id}/node-chat")
-def node_chat(dataset_id: str, req: NodeChatRequest):
-    get_dataset(dataset_id)
-    import os, requests as _req
-    api_key = os.environ.get("DINOIKI_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="DINOIKI_API_KEY belum dikonfigurasi di server.")
-
-    connection = db_for(dataset_id)
-    try:
-        connection.execute("SET LOCAL statement_timeout = '15s'")
-        node_ctx = _build_node_context(connection, req.node_id)
-    except Exception as exc:
-        node_ctx = f"Gagal memuat data node: {exc}"
-    finally:
-        connection.close()
-
-    system_msg = (
-        f"{_CHAT_SYSTEM_PROMPT}\n"
-        f"User sedang menganalisis satu entitas spesifik dalam knowledge graph.\n"
-        f"Interpretasi posisi entitas (hub/isolated/normal), baca relasi sebagai konteks operasional,\n"
-        f"gunakan 2-hop reachability untuk dampak tidak langsung, dan sebutkan domain yang TIDAK terhubung sebagai blind spot.\n\n"
-        f"=== DATA ENTITAS ===\n{node_ctx}"
-    )
-
-    messages = [{"role": "system", "content": system_msg}]
-    for h in (req.history or [])[-10:]:
-        if h.get("role") in ("user", "assistant") and h.get("content"):
-            messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": req.question})
-
-    def _stream():
-        try:
-            resp = _req.post(
-                _DINOIKI_URL,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                json={"model": "gpt-4o", "messages": messages, "max_tokens": 2048, "temperature": 0.3, "stream": True},
-                stream=True, timeout=120,
-            )
-            if not resp.ok:
-                yield f"data: {json.dumps({'error': f'HTTP Error {resp.status_code}: {resp.reason}'})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            for raw in resp.iter_lines():
-                if not raw:
-                    continue
-                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                if not line.startswith("data:"):
-                    continue
-                ps = line[5:].strip()
-                if ps == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(ps)
-                    text = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""
-                    if text:
-                        yield f"data: {json.dumps({'text': text})}\n\n"
-                except Exception:
-                    pass
-        except Exception as exc:
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 DIST = Path(__file__).resolve().parents[1] / "dist"
