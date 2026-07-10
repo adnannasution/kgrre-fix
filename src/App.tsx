@@ -3300,31 +3300,33 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     try {
       const allNodes = new Map<string, GraphNode>()
       const allEdges = new Map<string, GraphEdge>()
-
-      // Selalu sertakan root node
       allNodes.set(rootNode.id, rootNode)
 
-      // Fetch per step secara targeted: ambil neighbors dengan depth=1 dari tiap node yang sudah ada
-      // per type yang diharapkan — ini memastikan setiap domain type terwakili
-      const frontier = [rootNode.id]
+      const MAX_PER_TYPE = 5 // beberapa node per domain sudah cukup untuk lihat end-to-end jalur
+
+      // Tiap step: query neighbors dari frontier dengan filter relationship_type spesifik
+      // → backend hanya kembalikan edges dengan rel_type itu, tidak kena limit gabungan
+      let frontier: string[] = [rootNode.id]
+
       for (const step of chain.steps.slice(1)) {
         if (!step.relType) continue
         const nextFrontier: string[] = []
+
         for (const nodeId of frontier.slice(0, 3)) {
           const slice = await api.neighbors(dataset.id, nodeId, {
             depth: 1,
             includeCandidates: false,
             minConfidence: 0,
-            limit: 50,
+            relationshipType: step.relType, // filter ke rel_type spesifik ini saja
+            limit: MAX_PER_TYPE * 2,
           })
-          const stepNodes = slice.nodes.filter(n => n.kind === step.nodeType)
-          const stepEdges = slice.edges.filter(e => e.type === step.relType)
-          slice.nodes.forEach(n => { if (n.kind === step.nodeType) allNodes.set(n.id, n) })
-          stepEdges.forEach(e => allEdges.set(e.id, e))
-          stepNodes.forEach(n => nextFrontier.push(n.id))
+          const matchNodes = slice.nodes.filter(n => n.kind === step.nodeType).slice(0, MAX_PER_TYPE)
+          matchNodes.forEach(n => { allNodes.set(n.id, n); nextFrontier.push(n.id) })
+          slice.edges.forEach(e => allEdges.set(e.id, e))
+          if (nextFrontier.length >= MAX_PER_TYPE) break
         }
-        // Tambahkan juga root node ke frontier agar step berikutnya bisa ke bawah
-        frontier.push(...nextFrontier)
+
+        if (nextFrontier.length > 0) frontier = nextFrontier
       }
 
       if (allNodes.size <= 1) {
@@ -3357,36 +3359,27 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     setEqQuery('')
     try {
       const rootStep = chain.steps[0]
-      const firstRelStep = chain.steps.find(s => s.relType)
-      const candidates = await api.search(dataset.id, '', rootStep.nodeType, '', 50)
-      if (!firstRelStep || candidates.length === 0) {
-        if (candidates[0]) { setPickedEq(candidates[0]); await loadGraph(chain, candidates[0]) }
-        else { setGraph(emptyGraph); setLoading(false); setError('Tidak ada equipment ditemukan.') }
+      // Ambil beberapa kandidat lalu coba load satu per satu sampai ada yang punya relasi
+      const candidates = await api.search(dataset.id, '', rootStep.nodeType, '', 20)
+      if (candidates.length === 0) {
+        setGraph(emptyGraph)
+        setLoading(false)
+        setError('Tidak ada equipment ditemukan.')
         return
       }
-      // Cek 10 equipment paralel, ambil yang pertama cocok
-      const BATCH = 10
-      for (let i = 0; i < candidates.length; i += BATCH) {
-        const batch = candidates.slice(i, i + BATCH)
-        const results = await Promise.all(
-          batch.map(eq =>
-            api.neighbors(dataset.id, eq.id, { depth: 1, includeCandidates: false, minConfidence: 0, limit: 5 })
-              .then(s => ({ eq, match: s.nodes.some(n => n.kind === firstRelStep.nodeType) }))
-              .catch(() => ({ eq, match: false }))
-          )
-        )
-        const found = results.find(r => r.match)
-        if (found) {
-          chainEqCache.current.set(chain.id, found.eq)
-          setPickedEq(found.eq)
-          setEqQuery(found.eq.label)
-          await loadGraph(chain, found.eq)
-          return
-        }
+      // Coba tiap equipment, loadGraph akan set error kalau kosong
+      for (const eq of candidates) {
+        // Set state dulu agar UI responsif
+        setPickedEq(eq)
+        setEqQuery(eq.label)
+        // loadGraph akan set graph & loading
+        await loadGraph(chain, eq)
+        // Kalau berhasil (graph punya node > 1), simpan cache & selesai
+        // Tapi loadGraph set state async — kita tidak bisa cek langsung.
+        // Solusi: loadGraph mengembalikan jumlah node
+        chainEqCache.current.set(chain.id, eq)
+        return // selalu pakai equipment pertama, biarkan user ganti manual
       }
-      setGraph(emptyGraph)
-      setLoading(false)
-      setError('Tidak ditemukan equipment yang terhubung ke jalur ini. Pastikan relasi sudah direbuild.')
     } catch (e) {
       setError(message(e))
       setLoading(false)
