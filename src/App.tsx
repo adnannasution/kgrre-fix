@@ -3359,27 +3359,50 @@ function ChainExplorer({ dataset }: { dataset?: DatasetSummary }) {
     setEqQuery('')
     try {
       const rootStep = chain.steps[0]
-      // Ambil beberapa kandidat lalu coba load satu per satu sampai ada yang punya relasi
-      const candidates = await api.search(dataset.id, '', rootStep.nodeType, '', 20)
+      const firstRelStep = chain.steps.find(s => s.relType)
+      // Ambil banyak kandidat untuk dicari yang benar-benar punya koneksi ke jalur
+      const candidates = await api.search(dataset.id, '', rootStep.nodeType, '', 100)
       if (candidates.length === 0) {
         setGraph(emptyGraph)
         setLoading(false)
         setError('Tidak ada equipment ditemukan.')
         return
       }
-      // Coba tiap equipment, loadGraph akan set error kalau kosong
-      for (const eq of candidates) {
-        // Set state dulu agar UI responsif
-        setPickedEq(eq)
-        setEqQuery(eq.label)
-        // loadGraph akan set graph & loading
-        await loadGraph(chain, eq)
-        // Kalau berhasil (graph punya node > 1), simpan cache & selesai
-        // Tapi loadGraph set state async — kita tidak bisa cek langsung.
-        // Solusi: loadGraph mengembalikan jumlah node
+      if (!firstRelStep) {
+        // Tidak ada rel_type di jalur ini, pakai equipment pertama saja
+        const eq = candidates[0]
         chainEqCache.current.set(chain.id, eq)
-        return // selalu pakai equipment pertama, biarkan user ganti manual
+        setPickedEq(eq); setEqQuery(eq.label)
+        await loadGraph(chain, eq)
+        return
       }
+      // Cek paralel 10 equipment sekaligus, tapi kali ini pakai filter relationshipType
+      // agar tidak kena limit dari ribuan direct-neighbors lain
+      const BATCH = 10
+      for (let i = 0; i < candidates.length; i += BATCH) {
+        const batch = candidates.slice(i, i + BATCH)
+        const checks = await Promise.all(
+          batch.map(eq =>
+            api.neighbors(dataset.id, eq.id, {
+              depth: 1, includeCandidates: false, minConfidence: 0,
+              relationshipType: firstRelStep.relType, limit: 5,
+            })
+            .then(s => ({ eq, hasRel: s.nodes.length > 0 }))
+            .catch(() => ({ eq, hasRel: false }))
+          )
+        )
+        const found = checks.find(c => c.hasRel)
+        if (found) {
+          chainEqCache.current.set(chain.id, found.eq)
+          setPickedEq(found.eq)
+          setEqQuery(found.eq.label)
+          await loadGraph(chain, found.eq)
+          return
+        }
+      }
+      setGraph(emptyGraph)
+      setLoading(false)
+      setError(`Tidak ditemukan equipment yang terhubung ke "${firstRelStep.label}" di dataset ini. Pastikan data sudah diupload dan relasi sudah direbuild.`)
     } catch (e) {
       setError(message(e))
       setLoading(false)
