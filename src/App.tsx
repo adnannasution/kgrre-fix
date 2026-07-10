@@ -3910,9 +3910,7 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
       <div className="chatbot-messages">
         {messages.length === 0 && (
           <div className="chatbot-welcome">
-            <div className="chatbot-welcome-icon">
-              <SparkleIcon style={{ width: 26, height: 26 }} />
-            </div>
+            <SparkleIcon style={{ width: 40, height: 40, opacity: 0.25 }} />
             <p className="chatbot-welcome-title">Tanya AI tentang Knowledge Graph</p>
             <p className="chatbot-welcome-sub">AI menyesuaikan kedalaman jawaban secara otomatis — teknis, agregat, dampak, atau strategis.</p>
             <div className="chatbot-suggestions">
@@ -3924,39 +3922,33 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
         )}
         {messages.map((msg, idx) => (
           <div key={idx} className={`chatbot-msg chatbot-msg-${msg.role}`}>
-            <div className="chatbot-msg-row">
-              <div className="chatbot-msg-bubble">
-                {msg.role === 'user'
-                  ? <pre className="chatbot-msg-text">{msg.content}</pre>
-                  : <div className="chatbot-msg-text chatbot-msg-md">{msg.content ? renderMarkdown(msg.content) : (generating ? '…' : '')}</div>
-                }
-                {msg.error && <div className="chatbot-msg-error">⚠ {msg.error}</div>}
-              </div>
+            <div className="chatbot-msg-bubble">
+              {msg.role === 'user'
+                ? <pre className="chatbot-msg-text">{msg.content}</pre>
+                : <div className="chatbot-msg-text chatbot-msg-md">{msg.content ? renderMarkdown(msg.content) : (generating ? '…' : '')}</div>
+              }
+              {msg.error && <div className="chatbot-msg-error">⚠ {msg.error}</div>}
             </div>
           </div>
         ))}
         <div ref={bottomRef} />
       </div>
       <div className="chatbot-input-area">
-        <div className="chatbot-input-inner">
-          {messages.length > 0 && (
-            <button className="chatbot-clear" onClick={clearChat}>✕ Baru</button>
-          )}
-          <div className="chatbot-input-box">
-            <input
-              className="chatbot-input"
-              placeholder="Tanya apa saja tentang knowledge graph kilang…"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
-              disabled={generating}
-            />
-            {generating
-              ? <button className="chatbot-send secondary" style={{ padding: '6px 12px' }} onClick={stop}>⏹</button>
-              : <button className="chatbot-send primary" style={{ padding: '6px 16px' }} onClick={() => void send()} disabled={!input.trim()}>Kirim</button>
-            }
-          </div>
-        </div>
+        {messages.length > 0 && (
+          <button className="chatbot-clear" onClick={clearChat}>✕ Baru</button>
+        )}
+        <input
+          className="chatbot-input"
+          placeholder="Tanya apa saja tentang knowledge graph kilang…"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
+          disabled={generating}
+        />
+        {generating
+          ? <button className="chatbot-send secondary" onClick={stop}>⏹</button>
+          : <button className="chatbot-send primary" onClick={() => void send()} disabled={!input.trim()}>Kirim</button>
+        }
       </div>
     </div>
   )
