@@ -2695,34 +2695,33 @@ function DatasetManager({ datasets, activeId, onActivate, onRefresh, onResetAll 
         </div>
       </div>
 
-      {!datasets.length && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '32px 0' }}>
-          <NoDataset />
-          <button
-            className="primary"
-            disabled={recovering}
-            onClick={async () => {
-              setRecovering(true)
-              setRecoverMsg('')
-              try {
-                const res = await fetch('/api/recover-datasets', { method: 'POST' })
-                const data = await res.json()
-                if (data.count > 0) {
-                  setRecoverMsg(`Berhasil memulihkan ${data.count} dataset.`)
-                  await onRefresh()
-                } else {
-                  setRecoverMsg('Tidak ada data yang bisa dipulihkan di database.')
-                }
-              } catch {
-                setRecoverMsg('Gagal menghubungi server.')
-              } finally {
-                setRecovering(false)
+      {!datasets.length && <NoDataset />}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0' }}>
+        <button
+          className="secondary small"
+          disabled={recovering}
+          onClick={async () => {
+            setRecovering(true)
+            setRecoverMsg('')
+            try {
+              const res = await fetch('/api/recover-datasets', { method: 'POST' })
+              const data = await res.json()
+              if (data.count > 0) {
+                setRecoverMsg(`Berhasil memulihkan ${data.count} dataset.`)
+                await onRefresh()
+              } else {
+                setRecoverMsg('Tidak ada data yang bisa dipulihkan di database.')
               }
-            }}
-          >{recovering ? 'Memeriksa database…' : 'Pulihkan dataset dari database'}</button>
-          {recoverMsg && <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</p>}
-        </div>
-      )}
+            } catch {
+              setRecoverMsg('Gagal menghubungi server.')
+            } finally {
+              setRecovering(false)
+            }
+          }}
+        >{recovering ? 'Memeriksa database…' : 'Pulihkan dataset dari database'}</button>
+        {recoverMsg && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{recoverMsg}</span>}
+      </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0' }}>
         <button
