@@ -653,26 +653,28 @@ def recover_datasets():
     Aman dijalankan berulang kali (INSERT ON CONFLICT DO NOTHING).
     Gunakan jika dataset_catalog kosong tapi data kg_node masih ada."""
     ensure_schema_once()
-    from .database import fetch_tuple
+    from psycopg.rows import tuple_row
     recovered = []
-    with connection() as conn:
-        # Temukan semua dataset_id di kg_node yang tidak ada di catalog
-        orphans = conn.execute("""
-            SELECT DISTINCT n.dataset_id
-            FROM kg_node n
-            WHERE NOT EXISTS (
-                SELECT 1 FROM dataset_catalog dc WHERE dc.id = n.dataset_id
-            )
-        """).fetchall()
-        for row in orphans:
-            did = row["dataset_id"]
-            with conn.cursor() as cur:
-                from psycopg.rows import tuple_row
-                cur.row_factory = tuple_row
-                cur.execute(
-                    "SELECT count(*) FROM kg_node WHERE dataset_id = %s", [did]
+    # Gunakan koneksi pool langsung tanpa RLS agar bisa baca lintas dataset_id.
+    with pool().connection() as conn:
+        # Temukan semua dataset_id di kg_node yang tidak ada di catalog.
+        # Bypass RLS dengan SET LOCAL row_security = off (butuh superuser/owner tabel).
+        # Alternatif aman: query pg_class tidak perlu RLS.
+        conn.execute("SET LOCAL row_security = off")
+        with conn.cursor(row_factory=tuple_row) as cur:
+            cur.execute("""
+                SELECT n.dataset_id,
+                       count(*) FILTER (WHERE TRUE) AS nc
+                FROM kg_node n
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM dataset_catalog dc WHERE dc.id = n.dataset_id
                 )
-                nc = (cur.fetchone() or (0,))[0]
+                GROUP BY n.dataset_id
+            """)
+            orphan_rows = cur.fetchall()
+
+        for (did, nc) in orphan_rows:
+            with conn.cursor(row_factory=tuple_row) as cur:
                 cur.execute(
                     "SELECT count(*) FROM kg_relationship WHERE dataset_id = %s", [did]
                 )
