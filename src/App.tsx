@@ -373,16 +373,6 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
               : <div style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>{active.node_count.toLocaleString('id-ID')} node · {active.edge_count.toLocaleString('id-ID')} relasi tersimpan di database</div>
             }
           </div>
-          <div className="match-methods" style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: '0.82em' }}>
-            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Exact match</span>
-            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Strip suffix /NN</span>
-            <span style={{ padding: '2px 8px', background: 'var(--amber-bg, #fef9c3)', color: 'var(--amber-fg, #a16207)', borderRadius: 4 }}>⚠ Prefix match (kandidat)</span>
-          </div>
-          <div className="match-methods" style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: '0.82em' }}>
-            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Exact match</span>
-            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Strip suffix /NN</span>
-            <span style={{ padding: '2px 8px', background: 'var(--amber-bg, #fef9c3)', color: 'var(--amber-fg, #a16207)', borderRadius: 4 }}>⚠ Prefix match (kandidat)</span>
-          </div>
         </section>
       </div>
     </section>
