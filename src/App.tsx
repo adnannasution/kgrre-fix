@@ -1362,7 +1362,7 @@ function GraphExplorer({ dataset, stats }: { dataset?: DatasetSummary; stats?: D
           <div className="graph-controls">
             <label>Mode <select value={mode} onChange={(event) => setMode(event.target.value as 'neighborhood' | 'directed')}><option value="neighborhood">Neighborhood</option><option value="directed">Directed descendants</option></select></label>
             <label>Hop <select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((item) => <option key={item}>{item}</option>)}</select></label>
-            <label>Relationship <select value={relation} onChange={(event) => setRelation(event.target.value)}><option value="">Semua</option>{stats?.edge_types.slice(0, 25).map((item) => <option key={`${item.relationship_type}-${item.is_candidate}`} value={item.relationship_type}>{human(item.relationship_type)}</option>)}</select></label>
+            <label>Relationship <select value={relation} onChange={(event) => setRelation(event.target.value)}><option value="">Semua</option>{stats?.edge_types.map((item) => <option key={`${item.relationship_type}-${item.is_candidate}`} value={item.relationship_type}>{human(item.relationship_type)}</option>)}</select></label>
             <label className="switch accent"><input type="checkbox" checked={includeCandidates} onChange={(event) => setIncludeCandidates(event.target.checked)} /><span />Candidate</label>
             <button className="secondary small" onClick={() => setInspectorOpen((value) => !value)}>{inspectorOpen ? 'Hide detail' : 'Show detail'}</button>
             <button className="primary small" onClick={() => void applyFilters()}>Apply filters</button>
