@@ -1087,17 +1087,30 @@ def _build_inspection_plan_nodes(con: duckdb.DuckDBPyConnection, views: list[str
     c = _union_cols(con, views)
     union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {v}" for v in views)
     eq_expr = _cs(c, 'equipment', 'tag_no_ln', 'tag_number', 'tag_no')
+    tag_no_ln_expr = _cs(c, 'tag_no_ln', 'tag_number', 'tag_no', default="''")
     ru_expr = f"ru_normalize({_cs(c, 'refinery_unit', 'ru', 'plant', default='NULL')})"
     con.execute(f"""
         CREATE TABLE inspection_plan_stage AS
         SELECT
             {eq_expr} AS equipment_raw,
+            {tag_no_ln_expr} AS tag_no_ln,
             coalesce({ru_expr}, ru_from_filename(_input_source_file)) AS refinery_unit,
+            {_cs(c, 'area', default="''")} AS area,
+            {_cs(c, 'unit', default="''")} AS unit,
+            {_cs(c, 'type_equipment', 'equipment_type', default="''")} AS type_equipment,
             {_cs(c, 'type_inspection', 'jenis_inspeksi')} AS type_inspection,
             {_cs(c, 'type_pekerjaan', 'jenis_pekerjaan')} AS type_pekerjaan,
             {_cs(c, 'due_date', cast=True)} AS due_date,
+            {_cs(c, 'due_year', default="''")} AS due_year,
             {_cs(c, 'plan_date', cast=True)} AS plan_date,
+            {_cs(c, 'plan_year', default="''")} AS plan_year,
             {_cs(c, 'actual_date', cast=True)} AS actual_date,
+            {_cs(c, 'actual_year', default="''")} AS actual_year,
+            {_cs(c, 'update_date', cast=True)} AS update_date,
+            {_cs(c, 'result_remaining_life', default="''")} AS result_remaining_life,
+            {_cs(c, 'result_visual', default="''")} AS result_visual,
+            {_cs(c, 'visual_lainnya', default="''")} AS visual_lainnya,
+            {_cs(c, 'result_lainnya', default="''")} AS result_lainnya,
             {_cs(c, 'grand_result', 'result')} AS grand_result,
             {_cs(c, 'periode', 'period', default="''")} AS periode,
             _input_source_file AS source_file,
@@ -1114,9 +1127,15 @@ def _build_inspection_plan_nodes(con: duckdb.DuckDBPyConnection, views: list[str
         SET plan_id = 'node_inspection_plan_' || md5(source_record_id);
 
         ALTER TABLE inspection_plan_stage ADD COLUMN equipment_id VARCHAR;
+        -- Match dengan RU dulu (lebih presisi)
         UPDATE inspection_plan_stage SET equipment_id = e.equipment_id
         FROM equipment_master e
         WHERE inspection_plan_stage.refinery_unit = e.refinery_unit
+          AND norm_code(inspection_plan_stage.equipment_raw) = norm_code(e.equipment_code_clean);
+        -- Fallback: match hanya equipment_code tanpa filter RU
+        UPDATE inspection_plan_stage SET equipment_id = e.equipment_id
+        FROM equipment_master e
+        WHERE inspection_plan_stage.equipment_id IS NULL
           AND norm_code(inspection_plan_stage.equipment_raw) = norm_code(e.equipment_code_clean);
     """)
 
@@ -1126,12 +1145,24 @@ def _build_inspection_plan_nodes(con: duckdb.DuckDBPyConnection, views: list[str
                coalesce(nullif(type_inspection, ''), 'Inspection Plan'), 'inspection_plan',
                json_object(
                    'refinery_unit', refinery_unit,
+                   'area', area,
+                   'unit', unit,
                    'equipment_raw', equipment_raw,
+                   'tag_no_ln', tag_no_ln,
+                   'type_equipment', type_equipment,
                    'type_inspection', type_inspection,
                    'type_pekerjaan', type_pekerjaan,
                    'due_date', cast(due_date AS VARCHAR),
+                   'due_year', due_year,
                    'plan_date', cast(plan_date AS VARCHAR),
+                   'plan_year', plan_year,
                    'actual_date', cast(actual_date AS VARCHAR),
+                   'actual_year', actual_year,
+                   'update_date', cast(update_date AS VARCHAR),
+                   'result_remaining_life', result_remaining_life,
+                   'result_visual', result_visual,
+                   'visual_lainnya', visual_lainnya,
+                   'result_lainnya', result_lainnya,
                    'grand_result', grand_result,
                    'periode', periode
                ),
