@@ -688,6 +688,23 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .coverage-hero-filter label { color: var(--muted); }
 .coverage-hero-filter select { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px 10px; font-size: var(--fs-sm); background: var(--panel); color: var(--text); min-width: 140px; }
 
+/* Metode pencocokan info */
+.coverage-method-info { margin-bottom: 18px; }
+.coverage-method-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.coverage-method-table th { background: var(--bg); color: var(--muted); font-weight: 600; padding: 8px 14px; text-align: left; border-bottom: 1px solid var(--line); }
+.coverage-method-table td { padding: 8px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.coverage-method-table tr:last-child td { border-bottom: none; }
+.coverage-method-table code { font-size: 0.85em; background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+.method-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.82em; font-weight: 600; white-space: nowrap; }
+.method-badge.verified { background: #dcfce7; color: #15803d; }
+.method-badge.candidate { background: #fef9c3; color: #a16207; }
+@media (prefers-color-scheme: dark) {
+  .method-badge.verified { background: #14532d; color: #86efac; }
+  .method-badge.candidate { background: #451a03; color: #fcd34d; }
+}
+:root[data-theme="dark"] .method-badge.verified { background: #14532d; color: #86efac; }
+:root[data-theme="dark"] .method-badge.candidate { background: #451a03; color: #fcd34d; }
+
 /* Domain cards grid */
 .coverage-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 .coverage-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; transition: box-shadow .15s, border-color .15s; cursor: default; }

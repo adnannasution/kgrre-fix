@@ -3066,6 +3066,32 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
         </div>
       </div>
 
+      {/* Info metode pencocokan */}
+      <div className="coverage-method-info">
+        <table className="coverage-method-table">
+          <thead>
+            <tr><th>Metode</th><th>Keterangan</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Exact Match</strong></td>
+              <td>Kode sama persis setelah normalisasi (huruf kapital, hapus karakter khusus)</td>
+              <td><span className="method-badge verified">✓ Terverifikasi</span></td>
+            </tr>
+            <tr>
+              <td><strong>Strip Suffix /NN</strong></td>
+              <td>Abaikan nomor urut di belakang <code>/</code> — contoh: <code>P-101/01</code> → <code>P-101</code></td>
+              <td><span className="method-badge verified">✓ Terverifikasi</span></td>
+            </tr>
+            <tr>
+              <td><strong>Prefix Match</strong></td>
+              <td>Awalan kode sama dalam satu RU — contoh: <code>P-101</code> cocok ke <code>P-101A</code></td>
+              <td><span className="method-badge candidate">⚠ Kandidat</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       {loading && <div className="coverage-loading">Memuat data coverage…</div>}
       {error && <div className="coverage-error">{error}</div>}
 
