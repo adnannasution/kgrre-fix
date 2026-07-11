@@ -291,6 +291,9 @@ export interface EquipmentCoverageRow {
   total: number
   matched: number
   unmatched: number
+  matched_exact?: number
+  matched_strip?: number
+  matched_candidate?: number
 }
 
 export interface EquipmentCoverageDomain {

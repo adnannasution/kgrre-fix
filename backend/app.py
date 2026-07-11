@@ -439,6 +439,84 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
 
             job.progress = 50
 
+            # Priority 2 — Strip suffix /NN (verified, confidence=0.95)
+            # Pakai relationship_id sama → ON CONFLICT DO NOTHING skip jika exact sudah ada
+            _DOMAIN_LIST = [
+                ('maintenance_order',       'EQUIPMENT_HAS_MAINTENANCE_ORDER',       'equipment_raw'),
+                ('rkap_program',            'EQUIPMENT_HAS_RKAP_PROGRAM',            'equipment_raw'),
+                ('reliability_observation', 'EQUIPMENT_HAS_RELIABILITY_OBSERVATION', 'equipment_raw'),
+                ('inspection',              'EQUIPMENT_HAS_INSPECTION',              'equipment_raw'),
+                ('equipment_issue',         'EQUIPMENT_HAS_ISSUE',                   'equipment_raw'),
+                ('readiness_record',        'EQUIPMENT_HAS_READINESS_RECORD',        'equipment_raw'),
+                ('work_order',              'EQUIPMENT_HAS_WORK_ORDER',              'equipment_raw'),
+                ('notification',            'EQUIPMENT_HAS_NOTIFICATION',            'equipment_raw'),
+                ('rotor',                   'EQUIPMENT_HAS_ROTOR',                   'equipment_raw'),
+                ('spm_workplan',            'EQUIPMENT_HAS_SPM_WORKPLAN',            'equipment_raw'),
+                ('tank_workplan',           'EQUIPMENT_HAS_TANK_WORKPLAN',           'equipment_raw'),
+                ('jetty_workplan',          'EQUIPMENT_HAS_JETTY_WORKPLAN',          'equipment_raw'),
+                ('readiness_tank',          'EQUIPMENT_HAS_READINESS_TANK',          'equipment_raw'),
+                ('readiness_spm',           'EQUIPMENT_HAS_READINESS_SPM',           'equipment_raw'),
+                ('readiness_jetty',         'EQUIPMENT_HAS_READINESS_JETTY',         'equipment_raw'),
+                ('zero_clamp',              'EQUIPMENT_HAS_ZERO_CLAMP',              'equipment_raw'),
+                ('pipeline_inspection',     'EQUIPMENT_HAS_PIPELINE_INSPECTION',     'equipment_raw'),
+                ('critical_equipment',      'EQUIPMENT_HAS_CRITICAL_EQUIPMENT',      'equipment_raw'),
+                ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
+                ('power_steam',             'EQUIPMENT_HAS_POWER_STEAM',             'equipment_raw'),
+                ('metering',                'EQUIPMENT_HAS_METERING',                'equipment_raw'),
+                ('ppms',                    'EQUIPMENT_HAS_PPMS',                    'equipment_raw'),
+                ('inspection_plan',         'EQUIPMENT_HAS_INSPECTION_PLAN',         'equipment_raw'),
+            ]
+            for domain_type, rel_type, eq_prop in _DOMAIN_LIST:
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(eq.node_id || '|{rel_type}|' || dn.node_id),
+                        eq.node_id, dn.node_id, '{rel_type}',
+                        '{{"match_rule":"strip_suffix"}}'::jsonb, false, 0.95
+                    FROM kg_node eq, kg_node dn
+                    WHERE eq.node_type = 'equipment'
+                      AND dn.node_type = '{domain_type}'
+                      AND regexp_replace(regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', ''), '[^A-Z0-9]+', '', 'g') != ''
+                      AND regexp_replace(regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '/[0-9]+$', ''), '[^A-Z0-9]+', '', 'g')
+                        = regexp_replace(regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', ''), '[^A-Z0-9]+', '', 'g')
+                      AND regexp_replace(regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '/[0-9]+$', ''), '[^A-Z0-9]+', '', 'g') != ''
+                    ON CONFLICT DO NOTHING
+                """)
+
+            job.progress = 55
+
+            # Priority 3 — Prefix match dalam RU yang sama (candidate, confidence=0.7)
+            # Pakai relationship_id sama → ON CONFLICT DO NOTHING skip jika P1/P2 sudah ada
+            for domain_type, rel_type, eq_prop in _DOMAIN_LIST:
+                connection.execute(f"""
+                    INSERT INTO kg_relationship
+                        (relationship_id, source_node_id, target_node_id,
+                         relationship_type, properties_json, is_candidate, confidence)
+                    SELECT DISTINCT
+                        'rel_' || md5(eq.node_id || '|{rel_type}|' || dn.node_id),
+                        eq.node_id, dn.node_id, '{rel_type}',
+                        '{{"match_rule":"prefix_match"}}'::jsonb, true, 0.7
+                    FROM kg_node eq, kg_node dn
+                    WHERE eq.node_type = 'equipment'
+                      AND dn.node_type = '{domain_type}'
+                      AND eq.properties_json->>'refinery_unit' = dn.properties_json->>'refinery_unit'
+                      AND eq.properties_json->>'refinery_unit' IS NOT NULL
+                      AND length(regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '[^A-Z0-9]+', '', 'g')) >= 5
+                      AND length(regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '[^A-Z0-9]+', '', 'g')) >= 5
+                      AND (
+                        regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '[^A-Z0-9]+', '', 'g')
+                          LIKE regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '[^A-Z0-9]+', '', 'g') || '%'
+                        OR
+                        regexp_replace(upper(coalesce(eq.properties_json->>'equipment_code_raw','')), '[^A-Z0-9]+', '', 'g')
+                          LIKE regexp_replace(upper(coalesce(dn.properties_json->>'{eq_prop}','')), '[^A-Z0-9]+', '', 'g') || '%'
+                      )
+                    ON CONFLICT DO NOTHING
+                """)
+
+            job.progress = 60
+
             # Monitoring Operasi: dua kolom equipment
             for mo_prop in ('equipment_process_raw', 'equipment_sts_raw'):
                 connection.execute(f"""
@@ -1914,22 +1992,34 @@ def equipment_coverage(dataset_id: str):
                     coalesce(dn.properties_json->>'refinery_unit', 'Tidak diketahui') AS ru,
                     count(*) AS total,
                     count(r.target_node_id) AS matched,
-                    count(*) - count(r.target_node_id) AS unmatched
+                    count(*) - count(r.target_node_id) AS unmatched,
+                    count(r.target_node_id) FILTER (WHERE r.properties_json->>'match_rule' = 'strip_suffix') AS matched_strip,
+                    count(rc.target_node_id) AS matched_candidate
                 FROM kg_node dn
                 LEFT JOIN kg_relationship r
                     ON r.target_node_id = dn.node_id
                    AND r.relationship_type = '{rel_type}'
                    AND NOT r.is_candidate
+                LEFT JOIN kg_relationship rc
+                    ON rc.target_node_id = dn.node_id
+                   AND rc.relationship_type = '{rel_type}'
+                   AND rc.is_candidate
                 WHERE dn.node_type = '{domain_type}'
                 GROUP BY ru
                 ORDER BY ru
             """)
             if domain_rows:
+                # matched_exact = matched - matched_strip (dihitung di Python)
+                enriched = []
+                for dr in domain_rows:
+                    dr = dict(dr)
+                    dr['matched_exact'] = int(dr['matched'] or 0) - int(dr['matched_strip'] or 0)
+                    enriched.append(dr)
                 result.append({
                     "domain": domain_type,
                     "rel_type": rel_type,
                     "eq_col": eq_col,
-                    "rows": domain_rows,
+                    "rows": enriched,
                 })
         return result
     finally:
