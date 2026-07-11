@@ -1444,7 +1444,7 @@ def ru_summary(dataset_id: str):
                 mo_by_ru = {r['refinery_unit']: r['c'] for r in rows(connection, """
                     SELECT coalesce(nullif(properties_json->>'refinery_unit',''), 'Unknown') AS refinery_unit,
                            count(*) AS c
-                    FROM kg_node WHERE node_type='maintenance_order'
+                    FROM kg_node WHERE node_type IN ('maintenance_order','work_order','notification')
                     GROUP BY refinery_unit
                 """)}
                 rkap_by_ru = {r['refinery_unit']: r['c'] for r in rows(connection, """

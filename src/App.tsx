@@ -261,12 +261,11 @@ export default function App() {
           <Nav icon={<GridIcon />} label="Overview" active={page === 'overview'} onClick={() => setPage('overview')} />
           <Nav icon={<DatabaseIcon />} label="Executive RU" active={page === 'executive'} onClick={() => setPage('executive')} />
           <Nav icon={<GridIcon />} label="Reliability Insight" active={page === 'insight'} onClick={() => setPage('insight')} />
-          <Nav icon={<EquipmentIcon />} label="Equipment 360" active={page === 'equipment'} onClick={() => setPage('equipment')} />
           <Nav icon={<GraphIcon />} label="Graph Explorer" active={page === 'graph'} onClick={() => setPage('graph')} />
           <Nav icon={<SparkleIcon />} label="Analisis AI" active={page === 'analisis'} onClick={() => setPage('analisis')} />
           <Nav icon={<SparkleIcon />} label="Tanya AI" active={page === 'chatbot'} onClick={() => setPage('chatbot')} />
           <Nav icon={<CheckIcon />} label="Coverage Equipment" active={page === 'coverage'} onClick={() => setPage('coverage')} />
-          <Nav icon={<ChainIcon />} label="Rantai Relasi" active={page === 'chains'} onClick={() => setPage('chains')} />
+          <Nav icon={<EquipmentIcon />} label="Equipment 360" active={page === 'equipment'} onClick={() => setPage('equipment')} />
           <Nav icon={<ChevronIcon />} label="Depth Explorer" active={page === 'depth'} onClick={() => setPage('depth')} />
           <Nav icon={<AlertIcon />} label="Data Review" active={page === 'review'} onClick={() => setPage('review')} badge={stats?.issues} />
           <Nav icon={<DatabaseIcon />} label="Daftar Dataset" active={page === 'datasets'} onClick={() => setPage('datasets')} />
@@ -369,7 +368,15 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
         <section className="panel">
           <PanelTitle title="Dataset provenance" subtitle="Output ETL yang terakhir di-ingest" />
           <div className="workbook-list">
-            {active.workbooks.map((file) => <div key={file}><CheckIcon /><span>{file}</span></div>)}
+            {active.workbooks.length > 0
+              ? active.workbooks.map((file) => <div key={file}><CheckIcon /><span>{file}</span></div>)
+              : <div style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>{active.node_count.toLocaleString('id-ID')} node · {active.edge_count.toLocaleString('id-ID')} relasi tersimpan di database</div>
+            }
+          </div>
+          <div className="match-methods" style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: '0.82em' }}>
+            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Exact match</span>
+            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Strip suffix /NN</span>
+            <span style={{ padding: '2px 8px', background: 'var(--amber-bg, #fef9c3)', color: 'var(--amber-fg, #a16207)', borderRadius: 4 }}>⚠ Prefix match (kandidat)</span>
           </div>
           <div className="match-methods" style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: '0.82em' }}>
             <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Exact match</span>
@@ -869,7 +876,7 @@ function ExecutiveDashboard({ dataset }: { dataset?: DatasetSummary }) {
       <div className="metrics">
         <Metric label="Refinery units" value={rows.length || summary?.refinery_units.length} accent="mint" />
         <Metric label="Equipment total" value={sum(rows, 'equipment_count')} accent="blue" />
-        <Metric label="Maintenance orders" value={sum(rows, 'maintenance_orders')} accent="violet" />
+        <Metric label="Work Order & Notifikasi" value={sum(rows, 'maintenance_orders')} accent="violet" />
         <Metric label="RKAP programs" value={sum(rows, 'rkap_programs')} accent="blue" />
         <Metric label="Unmatched identifiers" value={sum(rows, 'unmatched_identifiers')} accent="amber" />
       </div>
