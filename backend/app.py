@@ -369,7 +369,7 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
     import time as _time
     try:
         job.status = "running"
-        job.phase = "Menghapus relasi lama"
+        job.phase = "Membangun relasi baru (tidak menghapus yang lama)"
         job.progress = 5
         with scoped(dataset_id, autocommit=True) as connection:
 
