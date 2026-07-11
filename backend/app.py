@@ -416,6 +416,8 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 ('icu_issue',               'EQUIPMENT_HAS_ICU_ISSUE',               'equipment_raw'),
                 ('power_steam',             'EQUIPMENT_HAS_POWER_STEAM',             'equipment_raw'),
                 ('metering',               'EQUIPMENT_HAS_METERING',               'equipment_raw'),
+                ('ppms',                   'EQUIPMENT_HAS_PPMS',                   'equipment_raw'),
+                ('inspection_plan',        'EQUIPMENT_HAS_INSPECTION_PLAN',        'equipment_raw'),
             ]:
                 connection.execute(f"""
                     INSERT INTO kg_relationship
@@ -436,6 +438,23 @@ def _run_rebuild(job: ImportJob, dataset_id: str, row: dict) -> None:
                 """)
 
             job.progress = 50
+
+            # PPMS → RU (untuk PPMS yang tidak match equipment, tetap bisa ditemukan via RU)
+            connection.execute("""
+                INSERT INTO kg_relationship
+                    (relationship_id, source_node_id, target_node_id,
+                     relationship_type, properties_json, is_candidate, confidence)
+                SELECT DISTINCT
+                    'rel_' || md5(ru.node_id || '|REFINERY_UNIT_HAS_PPMS|' || dn.node_id),
+                    ru.node_id, dn.node_id,
+                    'REFINERY_UNIT_HAS_PPMS',
+                    '{}'::jsonb, false, 1.0
+                FROM kg_node ru, kg_node dn
+                WHERE ru.node_type = 'refinery_unit'
+                  AND dn.node_type = 'ppms'
+                  AND ru.label = dn.properties_json->>'refinery_unit'
+                ON CONFLICT DO NOTHING
+            """)
 
             # Monitoring Operasi: dua kolom equipment
             for mo_prop in ('equipment_process_raw', 'equipment_sts_raw'):
