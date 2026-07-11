@@ -1864,6 +1864,7 @@ _ALWAYS_SHOW_DOMAINS: list[tuple[str, str, str]] = [
     ('zero_clamp',       'EQUIPMENT_HAS_ZERO_CLAMP',       'equipment_raw'),
     ('metering',         'EQUIPMENT_HAS_METERING',         'equipment_raw'),
     ('ppms',             'EQUIPMENT_HAS_PPMS',             'equipment_raw'),
+    ('inspection_plan',  'EQUIPMENT_HAS_INSPECTION_PLAN',  'equipment_raw'),
 ]
 
 
