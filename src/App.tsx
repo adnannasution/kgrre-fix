@@ -371,6 +371,11 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
           <div className="workbook-list">
             {active.workbooks.map((file) => <div key={file}><CheckIcon /><span>{file}</span></div>)}
           </div>
+          <div className="match-methods" style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: '0.82em' }}>
+            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Exact match</span>
+            <span style={{ padding: '2px 8px', background: 'var(--green-bg, #dcfce7)', color: 'var(--green-fg, #15803d)', borderRadius: 4 }}>✓ Strip suffix /NN</span>
+            <span style={{ padding: '2px 8px', background: 'var(--amber-bg, #fef9c3)', color: 'var(--amber-fg, #a16207)', borderRadius: 4 }}>⚠ Prefix match (kandidat)</span>
+          </div>
         </section>
       </div>
     </section>
@@ -3011,8 +3016,11 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
       const rows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
       const total = rows.reduce((s, r) => s + Number(r.total), 0)
       const matched = rows.reduce((s, r) => s + Number(r.matched), 0)
+      const matchedExact = rows.reduce((s, r) => s + Number(r.matched_exact ?? (Number(r.matched) - Number(r.matched_strip ?? 0))), 0)
+      const matchedStrip = rows.reduce((s, r) => s + Number(r.matched_strip ?? 0), 0)
+      const matchedCandidate = rows.reduce((s, r) => s + Number(r.matched_candidate ?? 0), 0)
       const pct = total > 0 ? Math.round((matched / total) * 100) : 0
-      return { domain: d.domain, total, matched, unmatched: total - matched, pct }
+      return { domain: d.domain, total, matched, unmatched: total - matched, pct, matchedExact, matchedStrip, matchedCandidate }
     }).filter(d => d.total > 0)
 
   const grandTotal = aggregated.reduce((s, d) => s + d.total, 0)
@@ -3076,7 +3084,19 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
               </div>
               <div className="coverage-card-footer">
                 <div className="coverage-card-nums">
-                  <span><span className="c-matched">{format(d.matched)}</span> sama</span>
+                  <span>
+                    <span className="c-matched">{format(d.matched)}</span> sama
+                    {(d.matchedExact > 0 || d.matchedStrip > 0) && (
+                      <span style={{ color: 'var(--muted)', fontSize: '0.78em', marginLeft: 4 }}>
+                        ({d.matchedExact > 0 && `${format(d.matchedExact)} exact`}{d.matchedExact > 0 && d.matchedStrip > 0 && ' · '}{d.matchedStrip > 0 && `${format(d.matchedStrip)} strip suffix`})
+                      </span>
+                    )}
+                    {d.matchedCandidate > 0 && (
+                      <span style={{ color: 'var(--muted)', fontSize: '0.78em', marginLeft: 4 }}>
+                        +{format(d.matchedCandidate)} kandidat
+                      </span>
+                    )}
+                  </span>
                   <span><span className="c-unmatched">{format(d.unmatched)}</span> tidak sama</span>
                   <span style={{ color: 'var(--muted)' }}>{format(d.total)} total</span>
                 </div>
