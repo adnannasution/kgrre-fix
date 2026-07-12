@@ -3984,6 +3984,39 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
           AND properties_json->>'refinery_unit' ILIKE %s
     """, [ru_like])
 
+    # PPMS — jumlah dan breakdown status (jika ada)
+    ppms = rows(connection, """
+        SELECT count(*) AS total,
+               count(DISTINCT properties_json->>'equipment_raw') AS unique_equipment
+        FROM kg_node WHERE node_type='ppms'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+    ppms_by_status = rows(connection, """
+        SELECT coalesce(properties_json->>'status', 'Tidak diketahui') AS status, count(*) AS c
+        FROM kg_node WHERE node_type='ppms'
+          AND properties_json->>'refinery_unit' ILIKE %s
+        GROUP BY status ORDER BY c DESC LIMIT 8
+    """, [ru_like])
+
+    # Inspection Plan — jumlah, breakdown tipe equipment, ringkasan hasil
+    insp = rows(connection, """
+        SELECT count(*) AS total,
+               count(DISTINCT properties_json->>'equipment_raw') AS unique_equipment,
+               count(DISTINCT properties_json->>'type_equipment') AS unique_types,
+               sum(CASE WHEN properties_json->>'result_visual' IS NOT NULL
+                        AND properties_json->>'result_visual' != '' THEN 1 ELSE 0 END) AS has_result_visual,
+               sum(CASE WHEN properties_json->>'result_remaining_life' IS NOT NULL
+                        AND properties_json->>'result_remaining_life' != '' THEN 1 ELSE 0 END) AS has_rem_life
+        FROM kg_node WHERE node_type='inspection_plan'
+          AND properties_json->>'refinery_unit' ILIKE %s
+    """, [ru_like])
+    insp_by_type = rows(connection, """
+        SELECT coalesce(properties_json->>'type_equipment', 'Tidak diketahui') AS type_eq, count(*) AS c
+        FROM kg_node WHERE node_type='inspection_plan'
+          AND properties_json->>'refinery_unit' ILIKE %s
+        GROUP BY type_eq ORDER BY c DESC LIMIT 8
+    """, [ru_like])
+
     rel_obs = rows(connection, """
         SELECT count(*) AS total,
                sum(CASE WHEN (properties_json->>'derived_is_top_risk')='true' THEN 1 ELSE 0 END) AS top_risk,
@@ -4085,6 +4118,10 @@ def _gather_ru_ctx(connection, ru: str) -> dict:
         'oa': oa[0] if oa else {},
         'plo': plo[0] if plo else {},
         'pipeline': pipeline[0] if pipeline else {},
+        'ppms': ppms[0] if ppms else {},
+        'ppms_by_status': ppms_by_status,
+        'inspection_plan': insp[0] if insp else {},
+        'inspection_plan_by_type': insp_by_type,
         # KG-specific metrics
         'kg': {
             'total_equipment': total_eq,
@@ -4344,6 +4381,19 @@ def _build_analysis_prompt(scope: str, ru: str, focus: str, ctx: dict) -> str:
 - Pipa dengan temporary repair: {_fmt_int(pipeline_ctx.get('has_temp_repair', 0))}
 - Rata-rata remaining life: {round(float(pipeline_ctx.get('avg_rem_life') or 0), 1)} tahun
 - Pipa mendekati end-of-life (rem_life < 5 tahun): {_fmt_int(pipeline_ctx.get('near_eol', 0))}
+
+### PPMS (Pemeliharaan Preventif / PM Schedule)
+- Total rekaman PPMS: {_fmt_int(ctx.get('ppms', {}).get('total', 0))}
+- Jumlah equipment unik di PPMS: {_fmt_int(ctx.get('ppms', {}).get('unique_equipment', 0))}
+- Breakdown status: {', '.join(f"{r.get('status','')}: {r.get('c',0)}" for r in ctx.get('ppms_by_status', [])) or '(tidak ada data status)'}
+
+### Inspection Plan (Rencana Inspeksi)
+- Total rekaman inspection plan: {_fmt_int(ctx.get('inspection_plan', {}).get('total', 0))}
+- Jumlah equipment unik di inspection plan: {_fmt_int(ctx.get('inspection_plan', {}).get('unique_equipment', 0))}
+- Jumlah tipe equipment: {_fmt_int(ctx.get('inspection_plan', {}).get('unique_types', 0))}
+- Rekaman dengan hasil visual: {_fmt_int(ctx.get('inspection_plan', {}).get('has_result_visual', 0))}
+- Rekaman dengan data remaining life: {_fmt_int(ctx.get('inspection_plan', {}).get('has_rem_life', 0))}
+- Breakdown tipe equipment: {', '.join(f"{r.get('type_eq','')}: {r.get('c',0)}" for r in ctx.get('inspection_plan_by_type', [])) or '(tidak ada)'}
 """
         scope_desc = f"Refinery Unit **{ru}**"
 
