@@ -1773,13 +1773,26 @@ def _compute_reliability_insight(dataset_id: str):
             LIMIT 50
         """)
         mtbf_by_ru = {item["refinery_unit"]: item for item in mtbf_mttr_by_ru}
+        # Fallback: hitung langsung dari graph jika ETL tidak menyertakan file ru_equipment_summary
+        if not ru_summary:
+            ru_summary = rows(connection, """
+                SELECT
+                    coalesce(nullif(properties_json->>'refinery_unit',''), label) AS refinery_unit,
+                    properties_json->>'site_name' AS site_name,
+                    count(*) AS equipment_count
+                FROM kg_node
+                WHERE node_type = 'equipment'
+                GROUP BY refinery_unit, site_name
+                ORDER BY equipment_count DESC
+            """)
+
         ru_ranking = []
         for row in ru_summary:
             ru = row.get("refinery_unit") or "Unknown"
             reliability = mtbf_by_ru.get(ru, {})
             link_percentage = _float(row.get("overall_equipment_link_percentage"))
-            issue_count = _float(row.get("equipment_issues"))
-            recommendations = _float(row.get("recommendation_count"))
+            issue_count = _float(row.get("equipment_issues")) or 0
+            recommendations = _float(row.get("recommendation_count")) or 0
             avg_mtbf = _float(reliability.get("avg_mtbf"))
             avg_mttr = _float(reliability.get("avg_mttr"))
             risk_score = (
