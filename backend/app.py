@@ -4869,18 +4869,39 @@ def _gather_chat_context(connection, question: str) -> str:
     try:
         top_eq = rows(connection,
             f"""SELECT n.label, n.business_key,
+                       n.properties_json->>'refinery_unit' AS ru,
                        count(r.relationship_id) AS deg,
                        count(DISTINCT r.relationship_type) AS domain_count,
                        string_agg(DISTINCT r.relationship_type, ', ' ORDER BY r.relationship_type) AS domains
             FROM kg_node n
             JOIN kg_relationship r ON r.source_node_id = n.node_id AND NOT r.is_candidate
             WHERE n.node_type='equipment'{ru_clause_n}
-            GROUP BY n.node_id, n.label, n.business_key
+            GROUP BY n.node_id, n.label, n.business_key, ru
             ORDER BY deg DESC LIMIT 8""", params_eq)
         if top_eq:
             lines.append("\n[GRAPH] Hub equipment (degree centrality tertinggi — terhubung ke banyak domain):")
             for r_ in top_eq:
-                lines.append(f"  - {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('deg','?')} koneksi, {r_.get('domain_count','?')} domain [{r_.get('domains','')}]")
+                lines.append(f"  - {r_.get('label','?')} ({r_.get('business_key','?')}) RU: {r_.get('ru','?')} — {r_.get('deg','?')} koneksi, {r_.get('domain_count','?')} domain [{r_.get('domains','')}]")
+            if not ru_filter:
+                hub_by_ru = rows(connection, """
+                    SELECT n.properties_json->>'refinery_unit' AS ru,
+                           avg(cnt) AS avg_deg, max(cnt) AS max_deg
+                    FROM (
+                        SELECT n.node_id, n.properties_json->>'refinery_unit' AS ru_inner,
+                               count(r.relationship_id) AS cnt
+                        FROM kg_node n
+                        JOIN kg_relationship r ON r.source_node_id=n.node_id AND NOT r.is_candidate
+                        WHERE n.node_type='equipment'
+                        GROUP BY n.node_id, ru_inner
+                    ) sub
+                    JOIN kg_node n ON n.node_id = sub.node_id
+                    GROUP BY ru
+                    ORDER BY avg_deg DESC LIMIT 10
+                """)
+                if hub_by_ru:
+                    lines.append("  Rata-rata koneksi per RU (RU paling terhubung):")
+                    for r_ in hub_by_ru:
+                        lines.append(f"    - {r_.get('ru','?')}: avg {round(float(r_.get('avg_deg') or 0), 1)} koneksi/equipment, max {int(r_.get('max_deg') or 0)}")
     except Exception:
         pass
 
@@ -4908,6 +4929,12 @@ def _gather_chat_context(connection, question: str) -> str:
             lines.append(f"\n[GRAPH] Triple-risk equipment (bad actor + critical + RKAP terlambat — hanya terlihat lewat KG multi-hop):")
             for r_ in triple_risk:
                 lines.append(f"  ⚠ {r_.get('label','?')} ({r_.get('business_key','?')}) RU: {r_.get('ru','?')}")
+            if not ru_filter:
+                from collections import Counter
+                ru_counts = Counter(r_.get('ru','?') for r_ in triple_risk)
+                lines.append("  Ringkasan triple-risk per RU:")
+                for ru_name, cnt in ru_counts.most_common():
+                    lines.append(f"    - {ru_name}: {cnt} equipment")
         else:
             lines.append("\n[GRAPH] Triple-risk equipment (bad actor + critical + RKAP delayed): tidak ada saat ini.")
     except Exception:
@@ -4929,6 +4956,28 @@ def _gather_chat_context(connection, question: str) -> str:
             iso_cnt = int(isolated[0].get('c') or 0)
             pct = round(iso_cnt / total_eq_cnt * 100, 1) if total_eq_cnt else 0
             lines.append(f"\n[GRAPH] Equipment terisolasi (nol koneksi ke domain manapun): {iso_cnt} dari {total_eq_cnt} ({pct}%) — ini blind spot yang tidak terlihat di query SQL biasa.")
+        # Breakdown per RU — hanya jika tidak ada ru_filter (agar bisa jawab "RU mana paling lemah")
+        if not ru_filter:
+            iso_by_ru = rows(connection, """
+                SELECT n.properties_json->>'refinery_unit' AS ru,
+                       count(*) AS isolated,
+                       count(*) * 100.0 / nullif((
+                           SELECT count(*) FROM kg_node e2
+                           WHERE e2.node_type='equipment'
+                             AND e2.properties_json->>'refinery_unit' = n.properties_json->>'refinery_unit'
+                       ), 0) AS pct
+                FROM kg_node n
+                WHERE n.node_type='equipment'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM kg_relationship r WHERE r.source_node_id=n.node_id AND NOT r.is_candidate
+                  )
+                GROUP BY n.properties_json->>'refinery_unit'
+                ORDER BY pct DESC LIMIT 10
+            """)
+            if iso_by_ru:
+                lines.append("  Breakdown per RU (urut dari coverage terlemah):")
+                for r_ in iso_by_ru:
+                    lines.append(f"    - {r_.get('ru','?')}: {int(r_.get('isolated') or 0)} equipment terisolasi ({round(float(r_.get('pct') or 0), 1)}%)")
     except Exception:
         pass
 
@@ -4936,6 +4985,7 @@ def _gather_chat_context(connection, question: str) -> str:
     try:
         cascade = rows(connection,
             f"""SELECT n.label, n.business_key,
+                       n.properties_json->>'refinery_unit' AS ru,
                        count(DISTINCT r_wo.relationship_id) AS open_wo_count,
                        count(DISTINCT r_rel.relationship_id) AS risk_obs_count
             FROM kg_node n
@@ -4946,12 +4996,18 @@ def _gather_chat_context(connection, question: str) -> str:
             JOIN kg_node rel ON rel.node_id=r_rel.target_node_id AND rel.node_type='reliability_observation'
                 AND (rel.properties_json->>'derived_is_top_risk')='true'
             WHERE n.node_type='equipment'{ru_clause_n}
-            GROUP BY n.node_id, n.label, n.business_key
-            ORDER BY open_wo_count DESC LIMIT 5""", params_eq)
+            GROUP BY n.node_id, n.label, n.business_key, ru
+            ORDER BY open_wo_count DESC LIMIT 10""", params_eq)
         if cascade:
             lines.append("\n[GRAPH] Cascading risk — equipment dengan open WO sekaligus top-risk reliability (multi-hop path: equipment→WO→reliability):")
             for r_ in cascade:
-                lines.append(f"  🔴 {r_.get('label','?')} ({r_.get('business_key','?')}): {r_.get('open_wo_count')} open WO, {r_.get('risk_obs_count')} risk observation")
+                lines.append(f"  🔴 {r_.get('label','?')} ({r_.get('business_key','?')}) RU: {r_.get('ru','?')} — {r_.get('open_wo_count')} open WO, {r_.get('risk_obs_count')} risk observation")
+            if not ru_filter:
+                from collections import Counter
+                ru_cascade = Counter(r_.get('ru','?') for r_ in cascade)
+                lines.append("  Ringkasan cascading risk per RU:")
+                for ru_name, cnt in ru_cascade.most_common():
+                    lines.append(f"    - {ru_name}: {cnt} equipment berisiko")
     except Exception:
         pass
 
