@@ -365,15 +365,6 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
             ))}
           </div>
         </section>
-        <section className="panel">
-          <PanelTitle title="Dataset provenance" subtitle="Output ETL yang terakhir di-ingest" />
-          <div className="workbook-list">
-            {active.workbooks.length > 0
-              ? active.workbooks.map((file) => <div key={file}><CheckIcon /><span>{file}</span></div>)
-              : <div style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>{active.node_count.toLocaleString('id-ID')} node · {active.edge_count.toLocaleString('id-ID')} relasi tersimpan di database</div>
-            }
-          </div>
-        </section>
       </div>
     </section>
   )
@@ -868,7 +859,6 @@ function ExecutiveDashboard({ dataset }: { dataset?: DatasetSummary }) {
         <Metric label="Equipment total" value={sum(rows, 'equipment_count')} accent="blue" />
         <Metric label="Work Order & Notifikasi" value={sum(rows, 'maintenance_orders')} accent="violet" />
         <Metric label="RKAP programs" value={sum(rows, 'rkap_programs')} accent="blue" />
-        <Metric label="Unmatched identifiers" value={sum(rows, 'unmatched_identifiers')} accent="amber" />
       </div>
       <section className="panel table-panel">
         <PanelTitle title="RU equipment summary" subtitle="Coverage operasional per Refinery Unit" />
@@ -887,19 +877,25 @@ function ExecutiveDashboard({ dataset }: { dataset?: DatasetSummary }) {
       <div className="two-column balanced">
         <section className="panel table-panel fit">
           <PanelTitle title="Data coverage" subtitle="Linked-to-equipment percentage per domain" />
-          <Paged items={coverage}>{(rows) => (
-            <table><thead><tr><th>RU</th><th>Domain</th><th>Total</th><th>Linked</th><th>%</th></tr></thead>
-              <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.domain ?? '—'))}</td><td>{format(Number(row.total_records ?? 0))}</td><td>{format(Number(row.linked_to_equipment ?? 0))}</td><td>{String(row.equipment_link_percentage ?? '—')}</td></tr>)}</tbody>
-            </table>
-          )}</Paged>
+          {coverage.length === 0
+            ? <p style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)', padding: '0.5rem 0' }}>Data coverage belum tersedia — file <code>ru_data_coverage</code> tidak ditemukan di output ETL.</p>
+            : <Paged items={coverage}>{(rows) => (
+              <table><thead><tr><th>RU</th><th>Domain</th><th>Total</th><th>Linked</th><th>%</th></tr></thead>
+                <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.domain ?? '—'))}</td><td>{format(Number(row.total_records ?? 0))}</td><td>{format(Number(row.linked_to_equipment ?? 0))}</td><td>{String(row.equipment_link_percentage ?? '—')}</td></tr>)}</tbody>
+              </table>
+            )}</Paged>
+          }
         </section>
         <section className="panel table-panel fit">
           <PanelTitle title="Relationship quality" subtitle="Metode match dan confidence per relationship" />
-          <Paged items={quality}>{(rows) => (
-            <table><thead><tr><th>RU</th><th>Relationship</th><th>Method</th><th>Count</th><th>Avg conf.</th></tr></thead>
-              <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.relationship_type ?? '—'))}</td><td>{String(row.match_method ?? '—')}</td><td>{format(Number(row.relationship_count ?? 0))}</td><td>{String(row.average_confidence ?? '—')}</td></tr>)}</tbody>
-            </table>
-          )}</Paged>
+          {quality.length === 0
+            ? <p style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)', padding: '0.5rem 0' }}>Relationship quality belum tersedia — file <code>ru_relationship_quality</code> tidak ditemukan di output ETL.</p>
+            : <Paged items={quality}>{(rows) => (
+              <table><thead><tr><th>RU</th><th>Relationship</th><th>Method</th><th>Count</th><th>Avg conf.</th></tr></thead>
+                <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.relationship_type ?? '—'))}</td><td>{String(row.match_method ?? '—')}</td><td>{format(Number(row.relationship_count ?? 0))}</td><td>{String(row.average_confidence ?? '—')}</td></tr>)}</tbody>
+              </table>
+            )}</Paged>
+          }
         </section>
       </div>
     </section>
