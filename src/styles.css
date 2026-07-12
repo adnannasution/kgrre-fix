@@ -699,6 +699,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .method-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.82em; font-weight: 600; white-space: nowrap; }
 .method-badge.verified { background: #dcfce7; color: #15803d; }
 .method-badge.candidate { background: #fef9c3; color: #a16207; }
+.method-row-off { opacity: 0.4; }
+.coverage-method-table td:last-child { text-align: center; }
 @media (prefers-color-scheme: dark) {
   .method-badge.verified { background: #14532d; color: #86efac; }
   .method-badge.candidate { background: #451a03; color: #fcd34d; }
