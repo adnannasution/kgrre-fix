@@ -839,30 +839,30 @@ function ExecutiveDashboard({ dataset }: { dataset?: DatasetSummary }) {
           })}</tbody>
         </table>
       </section>
-      <div className="two-column balanced">
-        <section className="panel table-panel fit">
-          <PanelTitle title="Data coverage" subtitle="Linked-to-equipment percentage per domain" />
-          {coverage.length === 0
-            ? <p style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)', padding: '0.5rem 0' }}>Data coverage belum tersedia — file <code>ru_data_coverage</code> tidak ditemukan di output ETL.</p>
-            : <Paged items={coverage}>{(rows) => (
-              <table><thead><tr><th>RU</th><th>Domain</th><th>Total</th><th>Linked</th><th>%</th></tr></thead>
-                <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.domain ?? '—'))}</td><td>{format(Number(row.total_records ?? 0))}</td><td>{format(Number(row.linked_to_equipment ?? 0))}</td><td>{String(row.equipment_link_percentage ?? '—')}</td></tr>)}</tbody>
-              </table>
-            )}</Paged>
-          }
-        </section>
-        <section className="panel table-panel fit">
-          <PanelTitle title="Relationship quality" subtitle="Metode match dan confidence per relationship" />
-          {quality.length === 0
-            ? <p style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)', padding: '0.5rem 0' }}>Relationship quality belum tersedia — file <code>ru_relationship_quality</code> tidak ditemukan di output ETL.</p>
-            : <Paged items={quality}>{(rows) => (
-              <table><thead><tr><th>RU</th><th>Relationship</th><th>Method</th><th>Count</th><th>Avg conf.</th></tr></thead>
-                <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.relationship_type ?? '—'))}</td><td>{String(row.match_method ?? '—')}</td><td>{format(Number(row.relationship_count ?? 0))}</td><td>{String(row.average_confidence ?? '—')}</td></tr>)}</tbody>
-              </table>
-            )}</Paged>
-          }
-        </section>
-      </div>
+      {(coverage.length > 0 || quality.length > 0) && (
+        <div className="two-column balanced">
+          {coverage.length > 0 && (
+            <section className="panel table-panel fit">
+              <PanelTitle title="Data coverage" subtitle="Linked-to-equipment percentage per domain" />
+              <Paged items={coverage}>{(rows) => (
+                <table><thead><tr><th>RU</th><th>Domain</th><th>Total</th><th>Linked</th><th>%</th></tr></thead>
+                  <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.domain ?? '—'))}</td><td>{format(Number(row.total_records ?? 0))}</td><td>{format(Number(row.linked_to_equipment ?? 0))}</td><td>{String(row.equipment_link_percentage ?? '—')}</td></tr>)}</tbody>
+                </table>
+              )}</Paged>
+            </section>
+          )}
+          {quality.length > 0 && (
+            <section className="panel table-panel fit">
+              <PanelTitle title="Relationship quality" subtitle="Metode match dan confidence per relationship" />
+              <Paged items={quality}>{(rows) => (
+                <table><thead><tr><th>RU</th><th>Relationship</th><th>Method</th><th>Count</th><th>Avg conf.</th></tr></thead>
+                  <tbody>{rows.map((row, index) => <tr key={index}><td>{String(row.refinery_unit ?? '—')}</td><td>{human(String(row.relationship_type ?? '—'))}</td><td>{String(row.match_method ?? '—')}</td><td>{format(Number(row.relationship_count ?? 0))}</td><td>{String(row.average_confidence ?? '—')}</td></tr>)}</tbody>
+                </table>
+              )}</Paged>
+            </section>
+          )}
+        </div>
+      )}
     </section>
   )
 }
