@@ -356,16 +356,14 @@ function Overview({ active, stats, onNavigate }: { active?: DatasetSummary; stat
         <Metric label="Candidate edges" value={stats?.candidate_edges} accent="violet" />
         <Metric label="Data issues" value={stats?.issues} accent="amber" />
       </div>
-      <div className="two-column">
-        <section className="panel">
-          <PanelTitle title="Node landscape" subtitle="Tipe node aktual dari dataset" />
-          <div className="type-list">
-            {stats?.node_types.map((item, index) => (
-              <div key={item.node_type}><span className={`type-dot c${index % 6}`} /><span>{human(item.node_type)}</span><b>{format(item.count)}</b></div>
-            ))}
-          </div>
-        </section>
-      </div>
+      <section className="panel">
+        <PanelTitle title="Node landscape" subtitle="Tipe node aktual dari dataset" />
+        <div className="type-list">
+          {stats?.node_types.map((item, index) => (
+            <div key={item.node_type}><span className={`type-dot c${index % 6}`} /><span>{human(item.node_type)}</span><b>{format(item.count)}</b></div>
+          ))}
+        </div>
+      </section>
     </section>
   )
 }
@@ -2958,6 +2956,8 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
   const [unmatched, setUnmatched] = useState<UnmatchedEquipment[]>([])
   const [unmatchedLoading, setUnmatchedLoading] = useState(false)
   const [filterRu, setFilterRu] = useState<string>('Semua')
+  const [includeStrip, setIncludeStrip] = useState(true)
+  const [includeCandidate, setIncludeCandidate] = useState(true)
 
   useEffect(() => {
     if (!dataset) return
@@ -3008,10 +3008,10 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
     .map(d => {
       const rows = filterRu === 'Semua' ? d.rows : d.rows.filter(r => r.ru === filterRu)
       const total = rows.reduce((s, r) => s + Number(r.total), 0)
-      const matched = rows.reduce((s, r) => s + Number(r.matched), 0)
       const matchedExact = rows.reduce((s, r) => s + Number(r.matched_exact ?? (Number(r.matched) - Number(r.matched_strip ?? 0))), 0)
       const matchedStrip = rows.reduce((s, r) => s + Number(r.matched_strip ?? 0), 0)
       const matchedCandidate = rows.reduce((s, r) => s + Number(r.matched_candidate ?? 0), 0)
+      const matched = matchedExact + (includeStrip ? matchedStrip : 0) + (includeCandidate ? matchedCandidate : 0)
       const pct = total > 0 ? Math.round((matched / total) * 100) : 0
       return { domain: d.domain, total, matched, unmatched: total - matched, pct, matchedExact, matchedStrip, matchedCandidate }
     }).filter(d => d.total > 0)
@@ -3063,23 +3063,26 @@ function EquipmentCoveragePage({ dataset }: { dataset?: DatasetSummary }) {
       <div className="coverage-method-info">
         <table className="coverage-method-table">
           <thead>
-            <tr><th>Metode</th><th>Keterangan</th><th>Status</th></tr>
+            <tr><th>Metode</th><th>Keterangan</th><th>Status</th><th>Hitung</th></tr>
           </thead>
           <tbody>
             <tr>
               <td><strong>Exact Match</strong></td>
               <td>Kode sama persis setelah normalisasi (huruf kapital, hapus karakter khusus)</td>
               <td><span className="method-badge verified">✓ Terverifikasi</span></td>
+              <td><input type="checkbox" checked disabled title="Exact match selalu dihitung" /></td>
             </tr>
-            <tr>
+            <tr className={!includeStrip ? 'method-row-off' : ''}>
               <td><strong>Strip Suffix /NN</strong></td>
               <td>Abaikan nomor urut di belakang <code>/</code> — contoh: <code>P-101/01</code> → <code>P-101</code></td>
               <td><span className="method-badge verified">✓ Terverifikasi</span></td>
+              <td><input type="checkbox" checked={includeStrip} onChange={e => setIncludeStrip(e.target.checked)} /></td>
             </tr>
-            <tr>
+            <tr className={!includeCandidate ? 'method-row-off' : ''}>
               <td><strong>Prefix Match</strong></td>
               <td>Awalan kode sama dalam satu RU — contoh: <code>P-101</code> cocok ke <code>P-101A</code></td>
               <td><span className="method-badge candidate">⚠ Kandidat</span></td>
+              <td><input type="checkbox" checked={includeCandidate} onChange={e => setIncludeCandidate(e.target.checked)} /></td>
             </tr>
           </tbody>
         </table>
