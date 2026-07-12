@@ -3861,6 +3861,28 @@ const CHAT_SUGGESTIONS = [
   'RU mana yang coverage graph-nya paling lemah?',
 ]
 
+const CHAT_PROGRESS_STEPS = [
+  'Mengambil konteks knowledge graph…',
+  'Menelusuri hub equipment dan relasi multi-domain…',
+  'Menganalisis cascading risk dan isolated nodes…',
+  'Menyusun konteks graph untuk jawaban…',
+  'Menghasilkan jawaban…',
+]
+
+function ChatThinkingIndicator() {
+  const [step, setStep] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setStep(s => (s + 1) % CHAT_PROGRESS_STEPS.length), 1800)
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <div className="chat-thinking">
+      <span className="chat-thinking-dots"><span /><span /><span /></span>
+      <span className="chat-thinking-label">{CHAT_PROGRESS_STEPS[step]}</span>
+    </div>
+  )
+}
+
 function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -3943,7 +3965,9 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
             <div className="chatbot-msg-bubble">
               {msg.role === 'assistant'
                 ? <div className="chatbot-msg-text">{
-                    (msg.content || (generating ? '…' : '')).split('\n').map((line, li) => {
+                    generating && idx === messages.length - 1 && !msg.content
+                      ? <ChatThinkingIndicator />
+                      : (msg.content || '').split('\n').map((line, li) => {
                       const parts = line.split(/(\*\*[^*]+\*\*)/g)
                       return <p key={li} style={{ margin: '2px 0' }}>{parts.map((part, pi) =>
                         part.startsWith('**') && part.endsWith('**')

@@ -887,6 +887,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue-line); box-
 .chatbot-clear { padding: 9px 13px; border-radius: var(--r-md); cursor: pointer; font-size: var(--fs-xs); background: transparent; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; transition: all 0.15s; }
 .chatbot-clear:hover { background: var(--panel-2); border-color: var(--blue-line); color: var(--blue); }
 
+/* Thinking indicator */
+.chat-thinking { display: flex; align-items: center; gap: 10px; padding: 2px 0; }
+.chat-thinking-dots { display: flex; gap: 4px; }
+.chat-thinking-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); opacity: 0.3; animation: chat-dot-bounce 1.2s infinite ease-in-out; }
+.chat-thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.chat-thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chat-dot-bounce { 0%, 80%, 100% { transform: scale(0.7); opacity: 0.3; } 40% { transform: scale(1); opacity: 1; } }
+.chat-thinking-label { font-size: var(--fs-xs); color: var(--muted); font-style: italic; animation: chat-label-fade 0.4s ease; }
+@keyframes chat-label-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
 /* ── NodeChat Page (Detail AI) ── */
 .nodechat-page { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 120px); gap: 0; overflow: hidden; }
 .nodechat-sidebar { border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
