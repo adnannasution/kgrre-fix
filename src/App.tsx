@@ -3975,7 +3975,19 @@ function ChatbotPage({ dataset }: { dataset?: DatasetSummary }) {
         {messages.map((msg, idx) => (
           <div key={idx} className={`chatbot-msg chatbot-msg-${msg.role}`}>
             <div className="chatbot-msg-bubble">
-              <pre className="chatbot-msg-text">{msg.content || (msg.role === 'assistant' && generating ? '…' : '')}</pre>
+              {msg.role === 'assistant'
+                ? <div className="chatbot-msg-text">{
+                    (msg.content || (generating ? '…' : '')).split('\n').map((line, li) => {
+                      const parts = line.split(/(\*\*[^*]+\*\*)/g)
+                      return <p key={li} style={{ margin: '2px 0' }}>{parts.map((part, pi) =>
+                        part.startsWith('**') && part.endsWith('**')
+                          ? <strong key={pi}>{part.slice(2, -2)}</strong>
+                          : part
+                      )}</p>
+                    })
+                  }</div>
+                : <pre className="chatbot-msg-text">{msg.content}</pre>
+              }
               {msg.error && <div className="chatbot-msg-error">⚠ {msg.error}</div>}
             </div>
           </div>
